@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+
+# Package manager state
+.pnpm-store/
+
+# Build output
+dist/
+packages/*/dist/
+packages/adapters/*/dist/
+
+# TypeScript incremental state
+*.tsbuildinfo
+
+# Test and coverage output
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Local runtime state
+.env
+.env.*
+!.env.example
+!.env.test.example
+.npmrc
+docko/
+workspace/
+
+# Local launch/operator bundles
+Invoml_LAUNCH/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary files
+tmp/
+temp/
+.publish/
+qa-temp/
+*.tgz
+*.tmp
+*.swp
+
+# Prevent accidental commits of generated artifacts inside source trees
+packages/**/src/**/*.js
+packages/**/src/**/*.js.map
+packages/**/src/**/*.d.ts

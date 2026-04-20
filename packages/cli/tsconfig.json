@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": "../../",
+    "paths": {
+      "@docko/core": ["packages/core/dist/index.d.ts"],
+      "@docko/adapter-claude-code": ["packages/adapters/claude-code/dist/index.d.ts"]
+    },
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"]
+}

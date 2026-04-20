@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@docko/core": ["packages/core/dist/index.d.ts"],
+      "@docko/cli": ["packages/cli/dist/index.d.ts"],
+      "@docko/adapter-claude-code": ["packages/adapters/claude-code/dist/index.d.ts"]
+    },
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true
+  }
+}

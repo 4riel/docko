@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docko Repo"
+  short_description: "Navigate the docko monorepo and choose the right docs, package, and checks."
+  default_prompt: "Use this skill to orient yourself in the docko repository before making changes."

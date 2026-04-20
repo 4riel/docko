@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docko.dev/schemas/registry.schema.json",
+  "title": "docko registry",
+  "description": "Canonical registry document for docko workspace metadata, resources, claims, and delegations. Session manifests live separately under docko/sessions/.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "workspace",
+    "applications",
+    "resources"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Protocol schema version for this registry document."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the most recent registry write."
+    },
+    "workspace": {
+      "$ref": "#/$defs/workspace"
+    },
+    "applications": {
+      "type": "array",
+      "description": "Optional application metadata used for application-aware slot discovery and selection.",
+      "items": {
+        "$ref": "#/$defs/application"
+      }
+    },
+    "resources": {
+      "type": "array",
+      "description": "Claimable resources known to the workspace.",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    }
+  },
+  "$defs": {
+    "safeId": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
+    },
+    "workspace": {
+      "type": "object",
+      "required": [
+        "workspace_id",
+        "workspace_root",
+        "name"
+      ],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "workspace_root": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "janitor": {
+              "type": "object",
+              "properties": {
+                "slot_stale_after_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Default stale timeout in milliseconds for future slot claims."
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "application": {
+      "type": "object",
+      "required": [
+        "application_id",
+        "name"
+      ],
+      "properties": {
+        "application_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "resource": {
+      "type": "object",
+      "required": [
+        "resource_type",
+        "resource_id",
+        "status"
+      ],
+      "properties": {
+        "resource_type": {
+          "$ref": "#/$defs/safeId",
+          "description": "Built-in values are slot and shared-env; custom safe-ID resource types are also allowed."
+        },
+        "resource_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Path relative to the workspace root when the resource is filesystem-backed."
+        },
+        "application_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Application that owns this slot when the workspace uses application-aware slot pools."
+        },
+        "slot_name": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/safeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Human-facing slot name inside an application pool."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "free",
+            "claimed"
+          ]
+        },
+        "claim": {
+          "description": "Current exclusive ownership record for a claimed resource. Free resources usually serialize this as null.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/claim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delegations": {
+          "type": "array",
+          "description": "Resource-scoped child authority records. The array is typically empty when the resource is free.",
+          "items": {
+            "$ref": "#/$defs/delegation"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "claimed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "claim"
+            ],
+            "properties": {
+              "claim": {
+                "$ref": "#/$defs/claim"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "claim": {
+      "type": "object",
+      "required": [
+        "owner_session_id",
+        "runtime",
+        "branch",
+        "task",
+        "claimed_at",
+        "updated_at",
+        "heartbeat_at",
+        "stale_after_ms",
+        "release_reason"
+      ],
+      "properties": {
+        "owner_session_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "runtime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "claimed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "heartbeat_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "stale_after_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "release_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Null while the claim is active. Release snapshots may use values such as manual, force-release, or stale-recovery."
+        }
+      },
+      "additionalProperties": true
+    },
+    "delegation": {
+      "type": "object",
+      "required": [
+        "child_session_id",
+        "granted_by_session_id",
+        "granted_at",
+        "scope"
+      ],
+      "properties": {
+        "child_session_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "granted_by_session_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "granted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

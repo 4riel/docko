@@ -1,0 +1,27 @@
+{
+  "name": "@docko/cli",
+  "version": "0.1.0-alpha.11",
+  "description": "CLI for the docko workspace and session protocol.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "bin": {
+    "docko": "bin/docko.js"
+  },
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node --input-type=module -e \"import { chmodSync } from 'node:fs'; if (process.platform !== 'win32') { chmodSync('dist/index.js', 0o755); chmodSync('bin/docko.js', 0o755); }\"",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@docko/adapter-claude-code": "workspace:*",
+    "@docko/core": "workspace:*"
+  }
+}

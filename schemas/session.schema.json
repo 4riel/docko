@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docko.dev/schemas/session.schema.json",
+  "title": "docko session manifest",
+  "description": "Canonical session manifest persisted under docko/sessions/<session-id>.json.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "session_id",
+    "runtime",
+    "actor_mode",
+    "parent_session_id",
+    "delegated_from_session_id",
+    "started_at",
+    "updated_at",
+    "ended_at",
+    "workspace_root",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Protocol schema version for this manifest."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
+    },
+    "runtime": {
+      "type": "string",
+      "description": "Runtime identifier such as portable or claude-code."
+    },
+    "actor_mode": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "delegated",
+        "automation"
+      ]
+    },
+    "parent_session_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
+    },
+    "delegated_from_session_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "workspace_root": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Runtime-specific metadata such as pid, hostname, or hook context.",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
