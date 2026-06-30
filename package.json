@@ -1,6 +1,6 @@
 {
   "name": "docko-workspace",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0-alpha.12",
   "description": "Workspace-first slot coordination for AI coding agents with a CLI, protocol core, and Claude Code adapter.",
   "author": "4riel",
   "license": "MIT",

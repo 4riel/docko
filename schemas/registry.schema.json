@@ -74,6 +74,19 @@
                 }
               },
               "additionalProperties": true
+            },
+            "scheduler": {
+              "type": "object",
+              "properties": {
+                "last_slot_id": {
+                  "type": "object",
+                  "description": "Round-robin cursor for slot acquire, keyed by application id (or a default key for flat slot pools). Maps each key to the last slot id claimed, so the next acquire starts after it.",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": true
             }
           },
           "additionalProperties": true

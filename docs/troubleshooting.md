@@ -131,6 +131,18 @@ The `--root` path points to a file instead of a directory.
 
 Choose a directory path and retry.
 
+### `ROOT_INSIDE_SLOT`
+
+You passed an explicit `--root` that resolves inside a managed `slots/` directory. docko refuses rather than fragmenting a second registry into the slot.
+
+The error payload reports both `provided_root` and the owning `workspace_root`. Re-run against the workspace root:
+
+```text
+docko status --root ./workspace
+```
+
+Note: an *implicit* root (cwd or `DOCKO_ROOT`) inside a slot is not an error — docko walks up to the owning workspace automatically. Only an explicit `--root` inside a slot is rejected.
+
 ### `SOURCE_NOT_FOUND`
 
 The source path for `init --clone-source`, `slot duplicate --from`, or `slot acquire --clone-from` was not found.

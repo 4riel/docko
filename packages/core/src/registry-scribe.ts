@@ -197,6 +197,9 @@ export class RegistryScribe {
               ...registry.workspace.config,
               janitor: registry.workspace.config.janitor
                 ? { ...registry.workspace.config.janitor }
+                : undefined,
+              scheduler: registry.workspace.config.scheduler
+                ? { last_slot_id: { ...(registry.workspace.config.scheduler.last_slot_id ?? {}) } }
                 : undefined
             }
           : undefined
