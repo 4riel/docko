@@ -1,6 +1,6 @@
 {
   "name": "@docko/adapter-claude-code",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "description": "Claude Code runtime adapter for docko.",
   "license": "MIT",
   "type": "module",

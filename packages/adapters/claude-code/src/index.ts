@@ -80,6 +80,7 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
   const templatesRoot = path.join(packageRoot, 'templates');
   const force = Boolean(options.force);
   const platform = process.platform;
+  const version = await readPackageVersion(packageRoot);
 
   const pluginResult = await copyManagedTree({
     sourceRoot: path.join(templatesRoot, 'plugin'),
@@ -97,7 +98,8 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
     workspaceRoot,
     pluginRoot,
     force,
-    platform
+    platform,
+    version
   });
 
   let settingsFile: string | null = null;
@@ -133,6 +135,32 @@ export async function readClaudeCodeSnippet(name: ClaudeCodeSnippetName): Promis
 function resolvePackageRoot(): string {
   const compiledDir = fileURLToPath(new URL('.', import.meta.url));
   return path.resolve(compiledDir, '..');
+}
+
+// Read the adapter package version so the generated plugin manifest always tracks the installed
+// docko version instead of a hardcoded literal that silently drifts between releases.
+async function readPackageVersion(packageRoot: string): Promise<string> {
+  const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8')) as { version?: string };
+  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+    throw new DockoError('Adapter package.json is missing a version.', 'ADAPTER_VERSION_MISSING', 2, {
+      package_root: packageRoot
+    });
+  }
+
+  return manifest.version;
+}
+
+// The plugin manifest is generated (not copied) so its version is stamped from the live package
+// version on every install. Keep the field order stable for idempotent writes.
+function buildPluginManifest(version: string): Record<string, unknown> {
+  return {
+    name: 'docko',
+    version,
+    description: 'Repo-local Claude Code integration bundle for docko workspace orchestration',
+    author: {
+      name: '4riel'
+    }
+  };
 }
 
 function toHookEntry(hook: ClaudeHookCommand): { matcher: string; hooks: Array<{ type: 'command'; command: string; timeout: number }> } {
@@ -181,10 +209,15 @@ async function writeGeneratedFiles(args: {
   pluginRoot: string;
   force: boolean;
   platform: TargetPlatform;
+  version: string;
 }): Promise<GeneratedFilesResult> {
   const written: string[] = [];
   const skipped: string[] = [];
   const generatedFiles = [
+    {
+      path: path.join(args.pluginRoot, 'plugin.json'),
+      content: `${JSON.stringify(buildPluginManifest(args.version), null, 2)}\n`
+    },
     {
       path: path.join(args.pluginRoot, 'hooks', 'hooks.json'),
       content: `${JSON.stringify(buildHooksManifest(args.platform), null, 2)}\n`
