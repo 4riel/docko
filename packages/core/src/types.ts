@@ -7,8 +7,15 @@ export interface WorkspaceJanitorConfig {
   slot_stale_after_ms?: number;
 }
 
+export interface WorkspaceSchedulerConfig {
+  // Last slot id claimed per application key, used to rotate slot acquire round-robin.
+  // Keyed by application_id (or a default key for flat, application-less slots).
+  last_slot_id?: Record<string, string>;
+}
+
 export interface WorkspaceConfig {
   janitor?: WorkspaceJanitorConfig;
+  scheduler?: WorkspaceSchedulerConfig;
 }
 
 export interface WorkspaceDescriptor {
@@ -112,6 +119,10 @@ export interface ClaimOptions {
   task?: string | null;
   runtime?: string | null;
   staleAfterMs?: number;
+  // When set, advance the round-robin scheduler cursor for this application key as part of
+  // the same claim transaction. Only the `slot acquire` path sets this; manual claims leave it
+  // unset so an explicit `/dock-claim <slot>` never perturbs rotation.
+  advanceSchedulerKey?: string | null;
 }
 
 export interface EnsureResourceOptions {

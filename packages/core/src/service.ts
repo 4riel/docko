@@ -302,6 +302,9 @@ export class DockoService {
             options.staleAfterMs ?? this.resourceCatalog.defaultStaleAfter(registry, options.resourceType),
             options.runtime ?? session.runtime ?? null
           );
+          if (options.advanceSchedulerKey != null) {
+            this.advanceSchedulerCursor(registry, options.advanceSchedulerKey, resource.resource_id);
+          }
           return resource;
         });
       },
@@ -556,6 +559,10 @@ export class DockoService {
     }
 
     ((registry.workspace.config ??= {}).janitor ??= {}).slot_stale_after_ms = options.slotStaleAfterMs;
+  }
+
+  private advanceSchedulerCursor(registry: RegistryDocument, key: string, slotId: string): void {
+    (((registry.workspace.config ??= {}).scheduler ??= {}).last_slot_id ??= {})[key] = slotId;
   }
 
   private applyClaim(

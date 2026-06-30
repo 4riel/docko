@@ -931,7 +931,8 @@ test('CLI internals cover slot-acquire helpers for clone defaults and size repor
         sessionEnv: null
       },
       'worker',
-      'main'
+      'main',
+      'backend'
     ),
     {
       sessionId: 'worker',
@@ -940,7 +941,8 @@ test('CLI internals cover slot-acquire helpers for clone defaults and size repor
       branch: 'feat/acquire',
       task: 'take slot',
       runtime: 'shell',
-      staleAfterMs: 5000
+      staleAfterMs: 5000,
+      advanceSchedulerKey: 'backend'
     }
   );
 });

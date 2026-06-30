@@ -83,6 +83,23 @@ test('Claude adapter install writes repo-local assets and merges settings idempo
   );
   assert.ok(second);
 
+  // The generated plugin manifest must stamp the live adapter version, never a hardcoded literal
+  // that drifts between releases.
+  const pluginManifest = JSON.parse(
+    await readFile(path.join(root, '.claude-plugin', 'docko', 'plugin.json'), 'utf8')
+  );
+  const adapterPackage = JSON.parse(
+    await readFile(path.join(repoRoot, 'packages', 'adapters', 'claude-code', 'package.json'), 'utf8')
+  );
+  assert.equal(pluginManifest.version, adapterPackage.version);
+
+  // The hook launcher must only opt into a shell on Windows; shell: true on POSIX re-parses args.
+  const hookScript = await readFile(
+    path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs'),
+    'utf8'
+  );
+  assert.match(hookScript, /shell: process\.platform === 'win32'/);
+
   const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
   assert.equal(settings.hooks.Notification.length, 1);
   assert.equal(settings.hooks.SessionStart.length, 1);

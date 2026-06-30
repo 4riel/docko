@@ -1,8 +1,0 @@
-{
-  "name": "docko",
-  "version": "0.1.0-alpha.8",
-  "description": "Repo-local Claude Code integration bundle for docko workspace orchestration",
-  "author": {
-    "name": "4riel"
-  }
-}

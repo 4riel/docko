@@ -60,6 +60,7 @@ The workspace descriptor lives inside `registry.json` and identifies the managed
 - `workspace_root`: absolute path to the managed workspace root
 - `name`: human-facing label
 - `config.janitor.slot_stale_after_ms`: optional default stale timeout for future slot claims
+- `config.scheduler.last_slot_id`: round-robin cursor for `slot acquire`, keyed by application id (or a default key for flat slot pools). Each entry records the last slot id claimed so the next acquire starts after it, leaving the just-released slot last in the ring
 
 ### Session Manifest
 
@@ -110,6 +111,11 @@ The registry tracks workspace-level state only. It does not inline session manif
     "config": {
       "janitor": {
         "slot_stale_after_ms": 14400000
+      },
+      "scheduler": {
+        "last_slot_id": {
+          "_default": "main"
+        }
       }
     }
   },
@@ -476,6 +482,7 @@ Representative error codes include:
 - `RESOURCE_ALREADY_CLAIMED`
 - `RESOURCE_OWNED_BY_OTHER_SESSION`
 - `RESOURCE_MUTATION_DENIED`
+- `ROOT_INSIDE_SLOT`
 - `CORRUPTED_REGISTRY`
 
 ## Architectural Boundaries

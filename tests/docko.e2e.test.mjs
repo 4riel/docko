@@ -225,6 +225,103 @@ test('slot acquire clones and claims a new managed slot when every slot is busy'
   assert.equal(status.resources[0].claim.owner_session_id, 'worker');
 });
 
+test('slot acquire rotates round-robin and skips the just-released slot', async () => {
+  const root = await makeWorkspace('docko-acquire-rotate-');
+  await mkdir(path.join(root, 'slots', 'app-gamma'));
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+
+  const claimed = [];
+  for (let i = 0; i < 3; i += 1) {
+    const acquired = parseStdout(
+      await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'rotate'])
+    );
+    claimed.push(acquired.slot_id);
+    await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', acquired.slot_id]);
+  }
+
+  // Cold start picks the lowest; thereafter each acquire starts AFTER the last claim, so the
+  // just-released slot is never the immediate next pick.
+  assert.deepEqual(claimed, ['app-alpha', 'app-beta', 'app-gamma']);
+
+  const registry = JSON.parse(await readFile(path.join(root, 'docko', 'registry.json'), 'utf8'));
+  assert.equal(registry.workspace.config.scheduler.last_slot_id._default, 'app-gamma');
+});
+
+test('the round-robin cursor survives slot discovery on later mutations', async () => {
+  const root = await makeWorkspace('docko-cursor-persist-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+
+  const acquired = parseStdout(
+    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'first'])
+  );
+  await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', acquired.slot_id]);
+
+  // A plain status runs discovery (which rebuilds free slots) — the cursor must not be wiped.
+  await runCli(['status', '--root', root]);
+  const registry = JSON.parse(await readFile(path.join(root, 'docko', 'registry.json'), 'utf8'));
+  assert.equal(registry.workspace.config.scheduler.last_slot_id._default, acquired.slot_id);
+});
+
+test('a manual claim does not advance the round-robin cursor', async () => {
+  const root = await makeWorkspace('docko-manual-claim-');
+  await mkdir(path.join(root, 'slots', 'app-gamma'));
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+
+  // Auto-acquire sets the cursor to app-alpha (cold start).
+  const first = parseStdout(
+    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'auto'])
+  );
+  assert.equal(first.slot_id, 'app-alpha');
+  await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', 'app-alpha']);
+
+  // A targeted manual claim/release of app-gamma must NOT move the cursor.
+  await runCli(['claim', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', 'app-gamma']);
+  await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', 'app-gamma']);
+
+  // Next auto-acquire still rotates app-alpha -> app-beta, proving the manual claim left it alone.
+  const second = parseStdout(
+    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'auto'])
+  );
+  assert.equal(second.slot_id, 'app-beta');
+});
+
+test('round-robin cursors rotate independently per application', async () => {
+  const root = await makeRoot('docko-multi-rotate-');
+  await mkdir(path.join(root, 'slots', 'backend', 'be_1'), { recursive: true });
+  await mkdir(path.join(root, 'slots', 'backend', 'be_2'), { recursive: true });
+  await mkdir(path.join(root, 'slots', 'frontend', 'fe_1'), { recursive: true });
+  await mkdir(path.join(root, 'slots', 'frontend', 'fe_2'), { recursive: true });
+  await runCli(['init', '--root', root]);
+  await runCli(['app', 'ensure', '--root', root, '--id', 'backend', '--keyword', 'backend']);
+  await runCli(['app', 'ensure', '--root', root, '--id', 'frontend', '--keyword', 'frontend']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+
+  const acquireRelease = async (application) => {
+    const acquired = parseStdout(
+      await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--application', application, '--task', application])
+    );
+    await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', acquired.slot_id]);
+    return acquired.slot_id;
+  };
+
+  // Interleave the two pools: each application's cursor must advance on its own, not be skewed
+  // by acquisitions in the other pool.
+  const b1 = await acquireRelease('backend');
+  const f1 = await acquireRelease('frontend');
+  const b2 = await acquireRelease('backend');
+  const f2 = await acquireRelease('frontend');
+
+  assert.deepEqual([b1, b2], ['backend.be_1', 'backend.be_2']);
+  assert.deepEqual([f1, f2], ['frontend.fe_1', 'frontend.fe_2']);
+
+  const registry = JSON.parse(await readFile(path.join(root, 'docko', 'registry.json'), 'utf8'));
+  assert.equal(registry.workspace.config.scheduler.last_slot_id.backend, 'backend.be_2');
+  assert.equal(registry.workspace.config.scheduler.last_slot_id.frontend, 'frontend.fe_2');
+});
+
 test('multi-application workspaces can seed backend and frontend slot pools and infer the right application from task text', async () => {
   const root = await makeRoot('docko-multi-app-');
   const workspaceRoot = path.join(root, 'workspace');
@@ -424,6 +521,41 @@ test('relative CLI roots persist an absolute workspace root in the registry', as
 
   const status = parseStdout(await runCli(['status', '--root', '.'], { cwd: root }));
   assert.equal(status.workspace.workspace_root, root);
+});
+
+test('running from inside a slot resolves up to the workspace root with no leaked registry', async () => {
+  const root = await makeWorkspace('docko-walkup-');
+  await runCli(['init', '--root', root]);
+  const slotDir = path.join(root, 'slots', 'app-alpha');
+
+  // cwd is the slot and no --root is given: docko must walk up to the owning workspace.
+  const status = parseStdout(await runCli(['status'], { cwd: slotDir }));
+  assert.equal(status.workspace.workspace_root, root);
+  assert.equal(existsSync(path.join(slotDir, 'docko')), false);
+});
+
+test('an explicit --root pointing inside a managed slot is refused, not fragmented', async () => {
+  const root = await makeWorkspace('docko-root-in-slot-');
+  await runCli(['init', '--root', root]);
+  const slotDir = path.join(root, 'slots', 'app-alpha');
+
+  const result = await runCli(['status', '--root', '.'], { cwd: slotDir });
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stderr);
+  assert.equal(payload.error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(payload.error.workspace_root, root);
+  assert.equal(existsSync(path.join(slotDir, 'docko')), false);
+});
+
+test('init never walks up so a nested workspace can still be scaffolded', async () => {
+  const root = await makeWorkspace('docko-init-nowalkup-');
+  await runCli(['init', '--root', root]);
+  const nested = path.join(root, 'slots', 'app-alpha', 'child');
+  await mkdir(nested, { recursive: true });
+
+  const init = parseStdout(await runCli(['init', '--root', '.'], { cwd: nested }));
+  assert.equal(init.workspace_root_absolute, nested);
+  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), true);
 });
 
 test('CLI launcher delegates through the checked-in bin entrypoint', async () => {
