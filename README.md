@@ -29,6 +29,7 @@ That is it. The adapter installs hooks into `.claude/` and wires `CLAUDE.md` gui
 
 - **SessionStart** opens a docko session automatically.
 - **PreToolUse** blocks `Edit` / `Write` into slots the session does not own.
+- **SubagentStart** hands a delegated teammate inherited access to the parent's slot.
 - **SessionEnd** releases claims for you.
 
 You work in Claude Code normally. Docko commands run in the background.
