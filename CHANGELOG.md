@@ -6,11 +6,22 @@ All notable changes to `docko-workspace` are documented here. The format is base
 
 ## [Unreleased]
 
+## [0.1.0-alpha.14]
+
 ### Added
 
 - Repository hardening: CI (build/check/test on Linux + Windows), CodeQL scanning, Dependabot,
   ESLint + Prettier, commit and pre-commit hooks, a provenance-enabled release workflow, and
   community health files.
+
+### Changed
+
+- Rewrote the README for a shorter, more didactic flow (tagline + badges, three quickstart paths,
+  deep content linked into `docs/`), and documented all four Claude hooks including SubagentStart.
+- Bumped CI actions (checkout, setup-node, pnpm/action-setup, codeql-action) and the TypeScript
+  toolchain to 6.0 with `@types/node` 26; added `ignoreDeprecations` and an explicit `types: ["node"]`
+  so the build and full test suite pass on the new compiler.
+- Normalized the `LICENSE` copyright holder to the `4riel` handle used across the project.
 
 ## [0.1.0-alpha.13]
 
@@ -27,5 +38,6 @@ All notable changes to `docko-workspace` are documented here. The format is base
 - The Claude adapter now stamps `plugin.json` with the live package version on every install
   instead of copying a hardcoded literal, and its hook launcher only opts into a shell on Windows.
 
-[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.13...HEAD
+[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.14...HEAD
+[0.1.0-alpha.14]: https://github.com/4riel/docko/compare/v0.1.0-alpha.13...v0.1.0-alpha.14
 [0.1.0-alpha.13]: https://github.com/4riel/docko/releases/tag/v0.1.0-alpha.13
