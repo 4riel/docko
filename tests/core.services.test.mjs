@@ -181,7 +181,7 @@ test('RegistryScribe normalizes optional config and delegations fields when load
 
   const registry = await scribe.ensureRegistry();
   assert.equal(registry.workspace.workspace_root, root);
-  assert.deepEqual(registry.workspace.config, { janitor: undefined });
+  assert.deepEqual(registry.workspace.config, { janitor: undefined, scheduler: undefined });
   assert.deepEqual(registry.resources[0].delegations, []);
 });
 

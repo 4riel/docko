@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { access, appendFile, cp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -327,6 +327,66 @@ Slot acquire options:
 
 function workspaceRoot(options: OptionMap): string {
   return option(options, 'root') ?? process.env.DOCKO_ROOT ?? process.cwd();
+}
+
+function hasRegistryAt(dir: string): boolean {
+  return existsSync(path.join(dir, 'docko', 'registry.json'));
+}
+
+// Walk up from a starting directory until a docko/registry.json is found, like git locating .git.
+// Returns the nearest ancestor (inclusive) that owns a registry, or null when none exists.
+function findWorkspaceRoot(startDir: string): string | null {
+  let dir = path.resolve(startDir);
+  while (true) {
+    if (hasRegistryAt(dir)) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return null;
+    }
+    dir = parent;
+  }
+}
+
+// True when `candidate` is the workspace's slots/ directory or any path beneath it.
+function isPathInsideSlots(workspaceRootPath: string, candidate: string): boolean {
+  const slotsDir = path.resolve(workspaceRootPath, 'slots');
+  const relative = path.relative(slotsDir, path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+// Resolve the workspace root a command should operate on. The starting point is still
+// --root / DOCKO_ROOT / cwd, but when that points below a real workspace we resolve UP to the
+// owning root so docko never fragments its state into a slot. `init` is exempt because it
+// legitimately scaffolds a fresh workspace at the given location.
+function resolveWorkspaceRoot(command: string[], options: OptionMap): string {
+  const startDir = path.resolve(workspaceRoot(options));
+  if (command[0] === 'init') {
+    return startDir;
+  }
+
+  if (hasRegistryAt(startDir)) {
+    return startDir;
+  }
+
+  const ancestorRoot = findWorkspaceRoot(startDir);
+  if (!ancestorRoot) {
+    return startDir;
+  }
+
+  // An explicit --root pointing inside a managed slot is a mistake: fail loud instead of
+  // silently leaking a registry into the slot. An implicit cwd inside a slot is resolved up.
+  if (option(options, 'root') !== null && isPathInsideSlots(ancestorRoot, startDir)) {
+    throw new DockoError(
+      `--root points inside a managed slot (${toDisplayPath(startDir)}). Run docko against the workspace root instead (${toDisplayPath(ancestorRoot)}).`,
+      'ROOT_INSIDE_SLOT',
+      1,
+      { provided_root: startDir, workspace_root: ancestorRoot }
+    );
+  }
+
+  return ancestorRoot;
 }
 
 function requiredOption(options: OptionMap, key: string): string {
@@ -1611,7 +1671,45 @@ function sizeInMegabytes(sizeBytes: number): number {
   return Number((sizeBytes / (1024 * 1024)).toFixed(2));
 }
 
-function buildSlotClaimOptions(context: CliContext, sessionId: string, slotId: string): ClaimOptions {
+const DEFAULT_SCHEDULER_KEY = '_default';
+
+function schedulerKeyForApplication(applicationId: string | null | undefined): string {
+  return applicationId ?? DEFAULT_SCHEDULER_KEY;
+}
+
+// Order the free slots so acquisition starts at the slot AFTER the last one claimed for this
+// application, wrapping around the full ring. The just-released slot ends up last, giving an
+// incidental cooldown without relying on timestamps (which are unreliable across hosts).
+function rotateFreeSlotsByCursor<T extends { resource_id: string; status: string }>(
+  orderedSlots: T[],
+  freeSlots: T[],
+  lastSlotId: string | null
+): T[] {
+  if (!lastSlotId || freeSlots.length <= 1) {
+    return freeSlots;
+  }
+
+  const cursorIndex = orderedSlots.findIndex((slot) => slot.resource_id === lastSlotId);
+  if (cursorIndex < 0) {
+    return freeSlots;
+  }
+
+  const rotated: T[] = [];
+  for (let offset = 1; offset <= orderedSlots.length; offset += 1) {
+    const slot = orderedSlots[(cursorIndex + offset) % orderedSlots.length];
+    if (slot.status === 'free') {
+      rotated.push(slot);
+    }
+  }
+  return rotated;
+}
+
+function buildSlotClaimOptions(
+  context: CliContext,
+  sessionId: string,
+  slotId: string,
+  schedulerKey: string
+): ClaimOptions {
   return {
     sessionId,
     resourceType: 'slot',
@@ -1619,7 +1717,8 @@ function buildSlotClaimOptions(context: CliContext, sessionId: string, slotId: s
     branch: option(context.options, 'branch'),
     task: option(context.options, 'task'),
     runtime: option(context.options, 'runtime') ?? process.env.DOCKO_RUNTIME ?? null,
-    staleAfterMs: parsePositiveInt(option(context.options, 'stale-after-ms'), 'stale-after-ms')
+    staleAfterMs: parsePositiveInt(option(context.options, 'stale-after-ms'), 'stale-after-ms'),
+    advanceSchedulerKey: schedulerKey
   };
 }
 
@@ -1677,11 +1776,14 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
       );
     }
 
+    const schedulerKey = schedulerKeyForApplication(selectedApplication?.application_id ?? null);
     const freeSlots = slotResources.filter((resource) => resource.status === 'free');
     if (freeSlots.length > 0) {
-      for (const freeSlot of freeSlots) {
+      const lastSlotId = status.workspace?.config?.scheduler?.last_slot_id?.[schedulerKey] ?? null;
+      const orderedFreeSlots = rotateFreeSlotsByCursor(slotResources, freeSlots, lastSlotId);
+      for (const freeSlot of orderedFreeSlots) {
         try {
-          const claim = await context.service.claim(buildSlotClaimOptions(context, sessionId, freeSlot.resource_id));
+          const claim = await context.service.claim(buildSlotClaimOptions(context, sessionId, freeSlot.resource_id, schedulerKey));
           return {
             ok: true,
             action: 'claimed-existing-slot',
@@ -1753,7 +1855,7 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
       );
       await context.service.init();
       const claim = await context.service.claim(
-        buildSlotClaimOptions(context, sessionId, String(duplicated.slot_id))
+        buildSlotClaimOptions(context, sessionId, String(duplicated.slot_id), schedulerKey)
       );
       const slotSizeBytes = await directorySizeBytes(String(duplicated.slot_path));
 
@@ -2175,7 +2277,7 @@ function renderInteractiveError(error: unknown): string {
 
 async function createContext(argv: string[]): Promise<CliContext> {
   const { command, options } = parseArgs(argv);
-  const root = workspaceRoot(options);
+  const root = resolveWorkspaceRoot(command, options);
 
   return {
     command,
@@ -2508,10 +2610,13 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  const context = await createContext(argv);
-  const key = context.command.slice(0, 3).join(' ');
+  let context: CliContext | undefined;
+  let key = '';
 
   try {
+    context = await createContext(argv);
+    key = context.command.slice(0, 3).join(' ');
+
     if (context.options.version) {
       process.stdout.write(`${getVersion()}\n`);
       return;
@@ -2545,11 +2650,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       }
     }
   } catch (error: unknown) {
-    if (shouldRenderInteractiveInit(context, key)) {
+    if (context && shouldRenderInteractiveInit(context, key)) {
       process.stderr.write(renderInteractiveError(error));
     } else {
+      const brief = context ? shouldRenderBrief(context, key) : false;
       const payload = toErrorPayload(error);
-      process.stderr.write(`${JSON.stringify(payload, null, shouldRenderBrief(context, key) ? 0 : 2)}\n`);
+      process.stderr.write(`${JSON.stringify(payload, null, brief ? 0 : 2)}\n`);
     }
     const exitCode = error instanceof DockoError ? error.exitCode : 1;
     process.exit(exitCode);
@@ -2566,6 +2672,12 @@ export const __test__ = {
   parseQualifiedSlotId,
   resolveManagedSlotPath,
   workspaceRoot,
+  resolveWorkspaceRoot,
+  findWorkspaceRoot,
+  isPathInsideSlots,
+  hasRegistryAt,
+  schedulerKeyForApplication,
+  rotateFreeSlotsByCursor,
   requiredOption,
   parsePositiveInt,
   parseEnum,

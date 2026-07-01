@@ -47,6 +47,8 @@ That scaffolds:
 
 Those file paths are not just examples. They come from the current installer templates and generated output verified by `tests/claude-code-adapter.test.mjs`.
 
+`plugin.json` is generated, not copied: its `version` is stamped from the installed docko version on every install, so the bundle never drifts behind the package.
+
 ## Add The Repo Rules
 
 Merge the contents of `.claude/snippets/CLAUDE.docko.md` into `CLAUDE.md`.

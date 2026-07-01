@@ -17,7 +17,9 @@ const child = spawn(dockoBin, ['adapter', 'claude-code', subcommand], {
     DOCKO_ROOT: dockoRoot
   },
   stdio: 'inherit',
-  shell: true
+  // Use a shell only on Windows, where resolving `docko`/`node` on PATH and .cmd shims needs
+  // cmd.exe. On POSIX, shell: true re-parses the args and breaks quoted DOCKO_BIN values.
+  shell: process.platform === 'win32'
 });
 
 child.on('exit', (code, signal) => {

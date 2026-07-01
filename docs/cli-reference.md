@@ -12,6 +12,8 @@ CLI command: `docko`
 - Use `docko --help` for the command list.
 - Use `docko --version` for the package version.
 - All commands accept `--root <path>`. If omitted, docko uses `DOCKO_ROOT` or the current working directory.
+- Root resolution walks up like git: when the starting point (cwd or an implicit `DOCKO_ROOT`) sits inside a workspace but below its root, docko resolves up to the nearest ancestor that owns `docko/registry.json` instead of fragmenting state into a slot. `init` is exempt — it always scaffolds at the given location.
+- An explicit `--root` that points inside a managed `slots/` directory is refused with the `ROOT_INSIDE_SLOT` error rather than leaking a registry into the slot; run against the workspace root instead.
 - Session-aware commands also accept `--session <id>`. If omitted, docko tries `DOCKO_SESSION_ID`, then auto-resolution from active sessions.
 - Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, and `session list`.
 - `docko --help` and `docko --version` print plain text.
@@ -121,7 +123,7 @@ Notes:
 
 ## `docko slot acquire`
 
-Claims the first free managed slot for a session. If every managed slot is already claimed, the command can prompt to create a fresh managed clone or do it programmatically with `--clone-when-busy`.
+Claims a free managed slot for a session. Acquisition is round-robin: it starts at the slot after the last one claimed for the same application (tracked in `config.scheduler.last_slot_id`) and wraps around the ring, so the just-released slot is picked last and gets an incidental cooldown. A cold start with no cursor picks the lowest slot. Manual `docko claim <slot>` never moves the cursor. If every managed slot is already claimed, the command can prompt to create a fresh managed clone or do it programmatically with `--clone-when-busy`.
 
 ```text
 docko slot acquire --root ./workspace --session leader --branch feat/docs --task "refresh docs"
