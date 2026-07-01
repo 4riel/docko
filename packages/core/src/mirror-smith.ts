@@ -71,11 +71,12 @@ export class MirrorSmith {
     }
 
     const slotStaleMs = registry.workspace?.config?.janitor?.slot_stale_after_ms ?? DEFAULT_SLOT_STALE_MS;
-    const slotStaleNote = slotStaleMs >= 3600000
-      ? `${slotStaleMs / 3600000} hour`
-      : slotStaleMs >= 60000
-        ? `${slotStaleMs / 60000} minute`
-        : `${slotStaleMs / 1000} second`;
+    const slotStaleNote =
+      slotStaleMs >= 3600000
+        ? `${slotStaleMs / 3600000} hour`
+        : slotStaleMs >= 60000
+          ? `${slotStaleMs / 60000} minute`
+          : `${slotStaleMs / 1000} second`;
 
     lines.push(
       '',

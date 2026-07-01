@@ -59,15 +59,7 @@ test('init --claude chains the Claude adapter install', async () => {
 test('init supports Claude and Codex onboarding together with instruction injection', async () => {
   const root = await makeRoot('docko-init-both-');
   const init = parseStdout(
-    await runCli([
-      'init',
-      '--root',
-      root,
-      '--claude',
-      '--codex',
-      '--inject-claude',
-      '--inject-codex'
-    ])
+    await runCli(['init', '--root', root, '--claude', '--codex', '--inject-claude', '--inject-codex'])
   );
 
   assert.ok(init.claude);
@@ -271,9 +263,7 @@ test('a manual claim does not advance the round-robin cursor', async () => {
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
 
   // Auto-acquire sets the cursor to app-alpha (cold start).
-  const first = parseStdout(
-    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'auto'])
-  );
+  const first = parseStdout(await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'auto']));
   assert.equal(first.slot_id, 'app-alpha');
   await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', 'app-alpha']);
 
@@ -301,7 +291,18 @@ test('round-robin cursors rotate independently per application', async () => {
 
   const acquireRelease = async (application) => {
     const acquired = parseStdout(
-      await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--application', application, '--task', application])
+      await runCli([
+        'slot',
+        'acquire',
+        '--root',
+        root,
+        '--session',
+        'worker',
+        '--application',
+        application,
+        '--task',
+        application
+      ])
     );
     await runCli(['release', '--root', root, '--session', 'worker', '--resource', 'slot', '--id', acquired.slot_id]);
     return acquired.slot_id;
@@ -422,7 +423,17 @@ test('multi-application workspaces can seed backend and frontend slot pools and 
   assert.equal(frontendAcquire.slot_id, 'frontend.main_1');
   assert.equal(existsSync(path.join(workspaceRoot, 'slots', 'frontend', 'main_1', 'ui.txt')), true);
 
-  await runCli(['claim', '--root', workspaceRoot, '--session', 'backend-worker', '--resource', 'slot', '--id', 'backend.main_2']);
+  await runCli([
+    'claim',
+    '--root',
+    workspaceRoot,
+    '--session',
+    'backend-worker',
+    '--resource',
+    'slot',
+    '--id',
+    'backend.main_2'
+  ]);
   const backendHotfix = parseStdout(
     await runCli([
       'slot',
@@ -460,14 +471,8 @@ test('multi-application workspaces can seed backend and frontend slot pools and 
   assert.match(mirror, /\| backend \| Backend \| backend, api \| Backend API service \|/);
   assert.match(mirror, /\| frontend \| Frontend \| frontend, web \| Frontend web app \|/);
 
-  const agentsSnippet = await readFile(
-    path.join(workspaceRoot, '.claude', 'snippets', 'AGENTS.docko.md'),
-    'utf8'
-  );
-  const claudeSnippet = await readFile(
-    path.join(workspaceRoot, '.claude', 'snippets', 'CLAUDE.docko.md'),
-    'utf8'
-  );
+  const agentsSnippet = await readFile(path.join(workspaceRoot, '.claude', 'snippets', 'AGENTS.docko.md'), 'utf8');
+  const claudeSnippet = await readFile(path.join(workspaceRoot, '.claude', 'snippets', 'CLAUDE.docko.md'), 'utf8');
   assert.match(agentsSnippet, /--application/);
   assert.match(agentsSnippet, /backend/);
   assert.match(claudeSnippet, /--application/);
@@ -481,10 +486,9 @@ test('slot acquire can prompt for the busy-slot clone fallback and cleanly abort
   await runCli(['claim', '--root', root, '--session', 'busy-owner', '--resource', 'slot', '--id', 'app-alpha']);
   await runCli(['claim', '--root', root, '--session', 'busy-owner', '--resource', 'slot', '--id', 'app-beta']);
 
-  const acquired = await runCli(
-    ['slot', 'acquire', '--root', root, '--session', 'worker', '--prompt'],
-    { input: 'n\n' }
-  );
+  const acquired = await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--prompt'], {
+    input: 'n\n'
+  });
 
   assert.equal(acquired.code, 2);
   assert.match(acquired.stderr, /Create and claim a fresh managed clone now\?/);
@@ -566,9 +570,12 @@ test('CLI launcher delegates through the checked-in bin entrypoint', async () =>
 });
 
 test('local npx package flow works from the repo root package', async () => {
-  const result = await runShellCommand(`npx --yes --package ${JSON.stringify(pathToFileURL(repoRoot).href)} docko --help`, {
-    cwd: repoRoot
-  });
+  const result = await runShellCommand(
+    `npx --yes --package ${JSON.stringify(pathToFileURL(repoRoot).href)} docko --help`,
+    {
+      cwd: repoRoot
+    }
+  );
 
   assert.equal(result.code, 0);
   assert.match(result.stdout, /Usage: docko <command>/);
@@ -609,10 +616,9 @@ test('packed tarball installs cleanly and runs through local install and npx pac
     assert.ok(tarballName);
     const tarballPath = path.join(packDir, tarballName);
 
-    const npxPackaged = await runShellCommand(
-      `npx --yes --package ${JSON.stringify(tarballPath)} docko --help`,
-      { cwd: installDir }
-    );
+    const npxPackaged = await runShellCommand(`npx --yes --package ${JSON.stringify(tarballPath)} docko --help`, {
+      cwd: installDir
+    });
     assert.equal(npxPackaged.code, 0, npxPackaged.stderr || npxPackaged.stdout);
     assert.match(npxPackaged.stdout, /Usage: docko <command>/);
 
@@ -674,10 +680,32 @@ test('resource ensure registers non-slot resources for flexible shared environme
 test('resource ensure updates the path of an existing non-slot resource', async () => {
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
-  await runCli(['resource', 'ensure', '--root', root, '--resource', 'shared-env', '--id', 'staging', '--path', 'shared/old']);
+  await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'shared-env',
+    '--id',
+    'staging',
+    '--path',
+    'shared/old'
+  ]);
 
   const updated = parseStdout(
-    await runCli(['resource', 'ensure', '--root', root, '--resource', 'shared-env', '--id', 'staging', '--path', 'shared/new'])
+    await runCli([
+      'resource',
+      'ensure',
+      '--root',
+      root,
+      '--resource',
+      'shared-env',
+      '--id',
+      'staging',
+      '--path',
+      'shared/new'
+    ])
   );
 
   assert.equal(updated.path, 'shared/new');
@@ -686,7 +714,18 @@ test('resource ensure updates the path of an existing non-slot resource', async 
 test('resource ensure refuses to mutate the path of a claimed resource', async () => {
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
-  await runCli(['resource', 'ensure', '--root', root, '--resource', 'shared-env', '--id', 'staging', '--path', 'shared/old']);
+  await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'shared-env',
+    '--id',
+    'staging',
+    '--path',
+    'shared/old'
+  ]);
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'owner']);
   await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'shared-env', '--id', 'staging']);
 
@@ -741,17 +780,7 @@ test('claim, heartbeat, release, and session-end cleanup work end to end', async
   );
   assert.equal(released.claim.owner_session_id, sessionId);
 
-  await runCli([
-    'claim',
-    '--root',
-    root,
-    '--session',
-    sessionId,
-    '--resource',
-    'slot',
-    '--id',
-    'app-beta'
-  ]);
+  await runCli(['claim', '--root', root, '--session', sessionId, '--resource', 'slot', '--id', 'app-beta']);
 
   const end = await runCli(['session', 'end', '--root', root, '--session', sessionId]);
   assert.equal(end.code, 0);
@@ -775,8 +804,14 @@ test('ambiguous resolution requires explicit --session', async () => {
     ['ses_a', 'ses_b']
   );
   assert.equal(error.active_sessions[0].runtime, 'shell');
-  assert.equal(error.next_steps.some((step) => step.includes('--session <id>')), true);
-  assert.equal(error.next_steps.some((step) => /Do not end sessions/.test(step)), true);
+  assert.equal(
+    error.next_steps.some((step) => step.includes('--session <id>')),
+    true
+  );
+  assert.equal(
+    error.next_steps.some((step) => /Do not end sessions/.test(step)),
+    true
+  );
 });
 
 test('claim fails cleanly when there is no active session', async () => {
@@ -796,7 +831,11 @@ test('brief output summarizes status, slot acquire, and session list', async () 
   const before = parseStdout(await runCli(['status', '--root', root, '--brief']));
   assert.deepEqual(before.slots, { total: 2, free: 2, claimed: 0 });
   assert.deepEqual(
-    before.resources.map((resource) => ({ id: resource.id, status: resource.status, owner: resource.owner_session_id })),
+    before.resources.map((resource) => ({
+      id: resource.id,
+      status: resource.status,
+      owner: resource.owner_session_id
+    })),
     [
       { id: 'app-alpha', status: 'free', owner: null },
       { id: 'app-beta', status: 'free', owner: null }
@@ -835,7 +874,9 @@ test('brief output summarizes status, slot acquire, and session list', async () 
     clone: null
   });
 
-  const after = parseStdout(await runCli(['status', '--root', root, '--resource', 'slot', '--id', 'app-alpha', '--brief']));
+  const after = parseStdout(
+    await runCli(['status', '--root', root, '--resource', 'slot', '--id', 'app-alpha', '--brief'])
+  );
   assert.deepEqual(after.slots, { total: 1, free: 0, claimed: 1 });
   assert.equal(after.resources[0].owner_session_id, 'worker');
   assert.equal(after.resources[0].task, 'verify brief acquire');
@@ -861,11 +902,31 @@ test('claim rejects resource ids containing path traversal characters', async ()
   await runCli(['init', '--root', root]);
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'owner']);
 
-  const traversal = await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'slot', '--id', '../escape']);
+  const traversal = await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'owner',
+    '--resource',
+    'slot',
+    '--id',
+    '../escape'
+  ]);
   assert.equal(traversal.code, 1);
   assert.match(traversal.stderr, /INVALID_ID/);
 
-  const spaces = await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'custom', '--id', 'has spaces']);
+  const spaces = await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'owner',
+    '--resource',
+    'custom',
+    '--id',
+    'has spaces'
+  ]);
   assert.equal(spaces.code, 1);
   assert.match(spaces.stderr, /INVALID_ID/);
 });
@@ -875,7 +936,17 @@ test('claim rejects unknown slot names', async () => {
   await runCli(['init', '--root', root]);
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'owner']);
 
-  const claim = await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'slot', '--id', 'missing-slot']);
+  const claim = await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'owner',
+    '--resource',
+    'slot',
+    '--id',
+    'missing-slot'
+  ]);
   assert.equal(claim.code, 1);
   assert.match(claim.stderr, /RESOURCE_NOT_FOUND/);
 });
@@ -887,7 +958,17 @@ test('non-owner release is denied', async () => {
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'other']);
 
   await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'slot', '--id', 'app-alpha']);
-  const denied = await runCli(['release', '--root', root, '--session', 'other', '--resource', 'slot', '--id', 'app-alpha']);
+  const denied = await runCli([
+    'release',
+    '--root',
+    root,
+    '--session',
+    'other',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha'
+  ]);
   assert.equal(denied.code, 2);
   assert.match(denied.stderr, /RESOURCE_OWNED_BY_OTHER_SESSION/);
 });
@@ -900,7 +981,18 @@ test('force release allows explicit recovery by a non-owner', async () => {
   await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'slot', '--id', 'app-alpha']);
 
   const released = parseStdout(
-    await runCli(['release', '--root', root, '--session', 'operator', '--resource', 'slot', '--id', 'app-alpha', '--force'])
+    await runCli([
+      'release',
+      '--root',
+      root,
+      '--session',
+      'operator',
+      '--resource',
+      'slot',
+      '--id',
+      'app-alpha',
+      '--force'
+    ])
   );
 
   assert.equal(released.claim.release_reason, 'force-release');
@@ -920,17 +1012,7 @@ test('delegated teammate inherits parent authority through Claude subagent start
   );
   const parentSessionId = parent.env.DOCKO_SESSION_ID;
 
-  await runCli([
-    'claim',
-    '--root',
-    root,
-    '--session',
-    parentSessionId,
-    '--resource',
-    'slot',
-    '--id',
-    'app-alpha'
-  ]);
+  await runCli(['claim', '--root', root, '--session', parentSessionId, '--resource', 'slot', '--id', 'app-alpha']);
 
   const child = parseStdout(
     await runCli(['adapter', 'claude-code', 'subagent-start', '--root', root, '--session', parentSessionId], {
@@ -1102,7 +1184,10 @@ test('stale claims are recovered and another session can reclaim the slot', asyn
   assert.equal(reclaim.code, 0);
 
   const logs = parseStdout(await runCli(['logs', '--root', root, '--limit', '20']));
-  assert.equal(logs.entries.some((entry) => entry.operation === 'stale-recovery' && entry.resource_id === 'app-alpha'), true);
+  assert.equal(
+    logs.entries.some((entry) => entry.operation === 'stale-recovery' && entry.resource_id === 'app-alpha'),
+    true
+  );
 });
 
 test('fresh session activity prevents janitor cleanup even when claim timestamps are old', async () => {
@@ -1312,8 +1397,19 @@ test('read-scoped delegation does not authorize file writes', async () => {
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'reader']);
   await runCli(['claim', '--root', root, '--session', 'leader', '--resource', 'slot', '--id', 'app-alpha']);
   await runCli([
-    'delegate', '--root', root, '--session', 'leader', '--child-session', 'reader',
-    '--resource', 'slot', '--id', 'app-alpha', '--scope', 'read'
+    'delegate',
+    '--root',
+    root,
+    '--session',
+    'leader',
+    '--child-session',
+    'reader',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--scope',
+    'read'
   ]);
 
   const auth = parseStdout(
@@ -1333,8 +1429,17 @@ test('releasing the parent claim invalidates child write access', async () => {
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'child']);
   await runCli(['claim', '--root', root, '--session', 'leader', '--resource', 'slot', '--id', 'app-alpha']);
   await runCli([
-    'delegate', '--root', root, '--session', 'leader', '--child-session', 'child',
-    '--resource', 'slot', '--id', 'app-alpha'
+    'delegate',
+    '--root',
+    root,
+    '--session',
+    'leader',
+    '--child-session',
+    'child',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha'
   ]);
 
   // Child can write while parent holds the claim.
@@ -1364,7 +1469,22 @@ test('session end marks delegated children ended and preserves absolute workspac
   await runCli(['session', 'start', '--root', root, '--runtime', 'claude-code', '--session', 'leader']);
 
   const child = parseStdout(
-    await runCli(['session', 'start', '--root', root, '--runtime', 'claude-code', '--session', 'child', '--actor-mode', 'delegated', '--parent-session', 'leader', '--delegated-from-session', 'leader'])
+    await runCli([
+      'session',
+      'start',
+      '--root',
+      root,
+      '--runtime',
+      'claude-code',
+      '--session',
+      'child',
+      '--actor-mode',
+      'delegated',
+      '--parent-session',
+      'leader',
+      '--delegated-from-session',
+      'leader'
+    ])
   );
   assert.equal(child.session_id, 'child');
 

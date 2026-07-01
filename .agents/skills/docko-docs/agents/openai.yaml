@@ -1,4 +1,4 @@
 interface:
-  display_name: "Docko Docs"
-  short_description: "Keep README, docs, examples, and agent guidance aligned with the implementation."
-  default_prompt: "Use this skill when updating docko documentation or onboarding material."
+  display_name: 'Docko Docs'
+  short_description: 'Keep README, docs, examples, and agent guidance aligned with the implementation.'
+  default_prompt: 'Use this skill when updating docko documentation or onboarding material.'

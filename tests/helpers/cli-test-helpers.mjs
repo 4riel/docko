@@ -188,7 +188,7 @@ export async function runCliDirect(args, options = {}) {
 
       process.argv = [process.execPath, cliPath, ...args];
       process.exitCode = undefined;
-      process.stdout.write = ((chunk, encoding, callback) => {
+      process.stdout.write = (chunk, encoding, callback) => {
         stdout += chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8') : String(chunk);
         if (typeof encoding === 'function') {
           encoding();
@@ -197,8 +197,8 @@ export async function runCliDirect(args, options = {}) {
           callback();
         }
         return true;
-      });
-      process.stderr.write = ((chunk, encoding, callback) => {
+      };
+      process.stderr.write = (chunk, encoding, callback) => {
         stderr += chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8') : String(chunk);
         if (typeof encoding === 'function') {
           encoding();
@@ -207,7 +207,7 @@ export async function runCliDirect(args, options = {}) {
           callback();
         }
         return true;
-      });
+      };
       Object.defineProperty(process.stdin, 'isTTY', { value: stdinIsTTY, configurable: true });
       process.stdin.setEncoding = () => process.stdin;
       process.stdin.on = (event, handler) => {
@@ -283,7 +283,11 @@ export async function runCliModule(args, options = {}) {
   await ensureBuiltArtifacts();
   const bootstrap = buildCliBootstrap(cliPath, args, Boolean(options.stdinIsTTY));
   let result = await runProcess(process.execPath, ['--input-type=module', '-e', bootstrap], options);
-  for (let attempt = 0; attempt < 2 && (isTransientCliImportFailure(result) || isEmptyCliResult(result)); attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < 2 && (isTransientCliImportFailure(result) || isEmptyCliResult(result));
+    attempt += 1
+  ) {
     await delay(50);
     result = await runProcess(process.execPath, ['--input-type=module', '-e', bootstrap], options);
   }
@@ -292,10 +296,7 @@ export async function runCliModule(args, options = {}) {
 
 export async function runShellCommand(command, options = {}) {
   const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
-  const shellArgs =
-    process.platform === 'win32'
-      ? ['-NoProfile', '-Command', command]
-      : ['-lc', command];
+  const shellArgs = process.platform === 'win32' ? ['-NoProfile', '-Command', command] : ['-lc', command];
 
   return runProcess(shell, shellArgs, options);
 }

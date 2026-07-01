@@ -76,7 +76,9 @@ export class LockBouncer {
   }
 
   authorizeFileWrite(registry: RegistryDocument, sessionId: string, filePath: string): AuthorizationResult {
-    const slotResource = registry.resources.find((resource) => matchesManagedPath(this.workspaceRoot, resource, filePath));
+    const slotResource = registry.resources.find((resource) =>
+      matchesManagedPath(this.workspaceRoot, resource, filePath)
+    );
 
     if (!slotResource) {
       return buildAuthorizationResult(true, 'path-not-managed', sessionId, null, null);

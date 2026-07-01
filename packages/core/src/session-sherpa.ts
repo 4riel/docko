@@ -95,7 +95,10 @@ export class SessionSherpa {
     return sessions.filter((session) => !session.ended_at);
   }
 
-  async resolve(explicitSessionId?: string | null, envSessionId?: string | null): Promise<{
+  async resolve(
+    explicitSessionId?: string | null,
+    envSessionId?: string | null
+  ): Promise<{
     sessionId: string | null;
     source: 'explicit' | 'env' | 'single-active' | 'none' | 'ambiguous';
     activeSessions: SessionManifest[];

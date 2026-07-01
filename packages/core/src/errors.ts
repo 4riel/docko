@@ -14,12 +14,9 @@ const SAFE_ID_PATTERN = /^[\w][\w\-.]*$/;
 
 export function assertSafeId(value: string, label: string): void {
   if (!SAFE_ID_PATTERN.test(value) || value.includes('..')) {
-    throw new DockoError(
-      `Invalid ${label}: must match [\\w][\\w\\-.]*  and must not contain '..'`,
-      'INVALID_ID',
-      1,
-      { [label]: value }
-    );
+    throw new DockoError(`Invalid ${label}: must match [\\w][\\w\\-.]*  and must not contain '..'`, 'INVALID_ID', 1, {
+      [label]: value
+    });
   }
 }
 

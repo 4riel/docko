@@ -8,7 +8,7 @@ const packageJsonPaths = [
   join(baseDir, 'package.json'),
   join(baseDir, 'packages', 'core', 'package.json'),
   join(baseDir, 'packages', 'cli', 'package.json'),
-  join(baseDir, 'packages', 'adapters', 'claude-code', 'package.json'),
+  join(baseDir, 'packages', 'adapters', 'claude-code', 'package.json')
 ];
 
 const manifests = packageJsonPaths.map((filePath) => {
@@ -18,7 +18,7 @@ const manifests = packageJsonPaths.map((filePath) => {
 
   return {
     filePath,
-    pkg: JSON.parse(readFileSync(filePath, 'utf8')),
+    pkg: JSON.parse(readFileSync(filePath, 'utf8'))
   };
 });
 

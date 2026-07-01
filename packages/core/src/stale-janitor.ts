@@ -4,7 +4,10 @@ function claimReferenceTime(claim: ResourceClaim): string {
   return claim.heartbeat_at ?? claim.updated_at ?? claim.claimed_at;
 }
 
-function sessionReferenceTime(resource: RegistryResource, sessionsById: ReadonlyMap<string, SessionManifest>): string | null {
+function sessionReferenceTime(
+  resource: RegistryResource,
+  sessionsById: ReadonlyMap<string, SessionManifest>
+): string | null {
   const relevantSessionIds = new Set<string>();
   if (resource.claim?.owner_session_id) {
     relevantSessionIds.add(resource.claim.owner_session_id);
@@ -81,7 +84,11 @@ export class StaleJanitor {
       resource.claim.release_reason = 'stale-recovery';
       resource.claim.updated_at = now.toISOString();
       resource.claim.heartbeat_at = now.toISOString();
-      staleResources.push({ ...resource, claim: { ...resource.claim }, delegations: [...(resource.delegations ?? [])] });
+      staleResources.push({
+        ...resource,
+        claim: { ...resource.claim },
+        delegations: [...(resource.delegations ?? [])]
+      });
       resource.status = 'free';
       resource.claim = null;
       resource.delegations = [];

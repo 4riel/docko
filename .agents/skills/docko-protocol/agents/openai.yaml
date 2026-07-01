@@ -1,4 +1,4 @@
 interface:
-  display_name: "Docko Protocol"
-  short_description: "Work on core protocol semantics, schemas, and the CLI contract."
-  default_prompt: "Use this skill when editing docko core behavior, schemas, or the public CLI contract."
+  display_name: 'Docko Protocol'
+  short_description: 'Work on core protocol semantics, schemas, and the CLI contract.'
+  default_prompt: 'Use this skill when editing docko core behavior, schemas, or the public CLI contract.'

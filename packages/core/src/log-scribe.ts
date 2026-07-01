@@ -81,9 +81,7 @@ export class LogScribe {
       throw error;
     }
 
-    const logFiles = names
-      .filter((name) => LOG_FILE_PATTERN.test(name) && keepDays.has(name.slice(0, 10)))
-      .sort();
+    const logFiles = names.filter((name) => LOG_FILE_PATTERN.test(name) && keepDays.has(name.slice(0, 10))).sort();
 
     const entries: DockoLogEntry[] = [];
     for (const name of logFiles) {

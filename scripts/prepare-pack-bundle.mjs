@@ -7,7 +7,7 @@ const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const packageMap = {
   '@docko/core': 'packages/core',
   '@docko/cli': 'packages/cli',
-  '@docko/adapter-claude-code': 'packages/adapters/claude-code',
+  '@docko/adapter-claude-code': 'packages/adapters/claude-code'
 };
 
 const restore = process.argv.includes('--restore');
@@ -21,7 +21,7 @@ if (!restore && distPaths.some((distPath) => !existsSync(distPath))) {
   const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
   const result = spawnSync(command, ['build'], {
     cwd: ROOT,
-    stdio: 'inherit',
+    stdio: 'inherit'
   });
 
   if ((result.status ?? 1) !== 0) {
