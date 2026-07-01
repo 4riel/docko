@@ -32,24 +32,14 @@
     },
     "actor_mode": {
       "type": "string",
-      "enum": [
-        "interactive",
-        "delegated",
-        "automation"
-      ]
+      "enum": ["interactive", "delegated", "automation"]
     },
     "parent_session_id": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": ["string", "null"],
       "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
     },
     "delegated_from_session_id": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": ["string", "null"],
       "pattern": "^(?!.*\\.\\.)[\\w][\\w.-]*$"
     },
     "started_at": {
@@ -61,10 +51,7 @@
       "format": "date-time"
     },
     "ended_at": {
-      "type": [
-        "string",
-        "null"
-      ],
+      "type": ["string", "null"],
       "format": "date-time"
     },
     "workspace_root": {

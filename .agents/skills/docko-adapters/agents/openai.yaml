@@ -1,4 +1,4 @@
 interface:
-  display_name: "Docko Adapters"
-  short_description: "Build or document runtime adapters, templates, and integration flows."
-  default_prompt: "Use this skill when editing docko runtime adapters or adapter-facing docs and templates."
+  display_name: 'Docko Adapters'
+  short_description: 'Build or document runtime adapters, templates, and integration flows.'
+  default_prompt: 'Use this skill when editing docko runtime adapters or adapter-facing docs and templates.'

@@ -128,7 +128,10 @@ test('CLI init prompt shows path examples when CLAUDE.md and AGENTS.md are not f
   assert.match(result.stderr, /Root check: fresh-workspace does not exist yet\. docko will create it\./);
   assert.match(result.stderr, /Use this root path\?/);
   assert.match(result.stderr, /I couldn't find CLAUDE\.md automatically/);
-  assert.match(result.stderr, /Examples: fresh-workspace\/CLAUDE\.md, fresh-workspace\/\.claude\/CLAUDE\.md, CLAUDE\.md/);
+  assert.match(
+    result.stderr,
+    /Examples: fresh-workspace\/CLAUDE\.md, fresh-workspace\/\.claude\/CLAUDE\.md, CLAUDE\.md/
+  );
   assert.match(result.stderr, /I couldn't find AGENTS\.md automatically/);
   assert.match(result.stderr, /Examples: fresh-workspace\/AGENTS\.md, fresh-workspace\/docs\/AGENTS\.md, AGENTS\.md/);
   assert.match(result.stderr, /Clone setup:/);
@@ -302,7 +305,17 @@ test('CLI init formats success payload paths relative to the current terminal fo
   await writeFile(path.join(sourceRepo, 'README.md'), '# source repo\n', 'utf8');
 
   const result = await runCli(
-    ['init', '--root', workspaceRoot, '--claude', '--codex', '--inject-claude', '--inject-codex', '--clone-source', sourceRepo],
+    [
+      'init',
+      '--root',
+      workspaceRoot,
+      '--claude',
+      '--codex',
+      '--inject-claude',
+      '--inject-codex',
+      '--clone-source',
+      sourceRepo
+    ],
     { cwd: root }
   );
 
@@ -318,8 +331,14 @@ test('CLI init formats success payload paths relative to the current terminal fo
   assert.equal(payload.duplicated_slot.slot_path, 'workspace/slots/main');
   assert.equal(payload.claude.plugin_root, 'workspace/.claude-plugin/docko');
   assert.equal(payload.codex.agents_file, 'workspace/AGENTS.md');
-  assert.equal(payload.injected_files.some((entry) => entry.file === 'workspace/CLAUDE.md'), true);
-  assert.equal(payload.injected_files.some((entry) => entry.file === 'workspace/AGENTS.md'), true);
+  assert.equal(
+    payload.injected_files.some((entry) => entry.file === 'workspace/CLAUDE.md'),
+    true
+  );
+  assert.equal(
+    payload.injected_files.some((entry) => entry.file === 'workspace/AGENTS.md'),
+    true
+  );
 });
 
 test('CLI init resolves non-interactive --clone-source relative to the current terminal folder', async () => {
@@ -562,7 +581,9 @@ test('CLI adapter session-end releases claims and subagent-start requires a pare
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'owner']);
   await runCli(['claim', '--root', root, '--session', 'owner', '--resource', 'slot', '--id', 'app-alpha']);
 
-  const ended = parseStdout(await runCli(['adapter', 'claude-code', 'session-end', '--root', root, '--session', 'owner']));
+  const ended = parseStdout(
+    await runCli(['adapter', 'claude-code', 'session-end', '--root', root, '--session', 'owner'])
+  );
   assert.deepEqual(ended, { ok: true });
 
   const status = parseStdout(await runCli(['status', '--root', root, '--resource', 'slot', '--id', 'app-alpha']));
@@ -573,9 +594,19 @@ test('CLI adapter session-end releases claims and subagent-start requires a pare
   assert.match(missingParent.stderr, /Missing parent session for Claude subagent/);
 });
 
-test('CLI internals cover helper branches around parsing, path formatting, and scaffolding', async () => {
+test('CLI internals cover helper branches around parsing, path formatting, and scaffolding', async (t) => {
   const cli = await loadCliInternals();
   const root = await makeRoot('docko-cli-internals-');
+  // toDisplayPath renders paths relative to cwd and only falls back to an absolute path across
+  // filesystem roots. On Windows CI the temp dir (C:) and the checkout cwd (D:) live on different
+  // drives, which flips those relative-path expectations. Anchor cwd to a child of the temp root so
+  // root-based paths render as predictable `../` relatives on the same drive everywhere; restored
+  // after the test regardless of outcome.
+  const originalCwd = process.cwd();
+  const cwdAnchor = path.join(root, '__cwd__');
+  await mkdir(cwdAnchor, { recursive: true });
+  process.chdir(cwdAnchor);
+  t.after(() => process.chdir(originalCwd));
   const plainDir = path.join(root, 'plain');
   const emptyDir = path.join(root, 'empty');
   const workspaceDir = path.join(root, 'workspace-like');
@@ -609,8 +640,16 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
   assert.equal(cli.extractHookFilePath({ tool_input: { nope: true } }), null);
   assert.equal(cli.toDisplayPath(process.cwd()), '.');
   assert.match(cli.toDisplayPath(path.join(path.dirname(process.cwd()), 'sibling')), /^\.\.\//);
-  assert.equal(cli.toDisplayPath('D:\\docko-test'), 'D:\\docko-test');
-  assert.deepEqual(cli.buildPathExamples([path.join(root, 'CLAUDE.md'), path.join(root, 'CLAUDE.md')]), [cli.toDisplayPath(path.join(root, 'CLAUDE.md'))]);
+  if (process.platform === 'win32') {
+    // A path on a different drive from cwd cannot be relativized, so it is returned as-is.
+    // Pick a drive letter that is not the cwd drive so this holds regardless of the runner disk.
+    const cwdDrive = path.parse(process.cwd()).root.slice(0, 1).toUpperCase();
+    const foreignPath = `${cwdDrive === 'D' ? 'Q' : 'D'}:\\docko-test`;
+    assert.equal(cli.toDisplayPath(foreignPath), foreignPath);
+  }
+  assert.deepEqual(cli.buildPathExamples([path.join(root, 'CLAUDE.md'), path.join(root, 'CLAUDE.md')]), [
+    cli.toDisplayPath(path.join(root, 'CLAUDE.md'))
+  ]);
   assert.deepEqual(cli.buildInstructionExamples(root, 'CLAUDE.md'), [
     cli.toDisplayPath(path.join(root, 'CLAUDE.md')),
     cli.toDisplayPath(path.join(root, '.claude', 'CLAUDE.md')),
@@ -663,7 +702,10 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
   await mkdir(workspaceRelativeDir, { recursive: true });
   assert.equal(await cli.resolveDirectoryInput(root, 'workspace-relative'), workspaceRelativeDir);
   assert.equal(await cli.resolveCloneSourceInput(root, plainDir), plainDir);
-  await assert.rejects(() => cli.resolveCloneSourceInput(root, path.join(root, 'missing')), /existing non-empty folder/);
+  await assert.rejects(
+    () => cli.resolveCloneSourceInput(root, path.join(root, 'missing')),
+    /existing non-empty folder/
+  );
   await assert.rejects(() => cli.resolveCloneSourceInput(root, emptyDir), /does not contain any files or folders yet/);
 
   const missingRootCheck = await cli.inspectRoot(path.join(root, 'missing-parent', 'child'));
@@ -711,15 +753,30 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
 
   assert.equal(cli.formatInitPath(null), null);
   assert.deepEqual(cli.formatInitPathList([plainDir]), [cli.toDisplayPath(plainDir)]);
-  assert.equal(cli.formatInitRootCheckMessage(repoRootCheck), repoRootCheck.message.split(repoRootCheck.root).join(cli.toDisplayPath(repoRootCheck.root)));
-  const formattedDuplicate = cli.formatInitDuplicateResult({ source_path: plainDir, slot_path: path.join(root, 'slots', 'a') });
+  assert.equal(
+    cli.formatInitRootCheckMessage(repoRootCheck),
+    repoRootCheck.message.split(repoRootCheck.root).join(cli.toDisplayPath(repoRootCheck.root))
+  );
+  const formattedDuplicate = cli.formatInitDuplicateResult({
+    source_path: plainDir,
+    slot_path: path.join(root, 'slots', 'a')
+  });
   assert.equal(formattedDuplicate.source_path, cli.toDisplayPath(plainDir));
-  assert.deepEqual(cli.formatInitDuplicateResult({ source_path: null, slot_path: 42 }), { source_path: null, slot_path: 42 });
+  assert.deepEqual(cli.formatInitDuplicateResult({ source_path: null, slot_path: 42 }), {
+    source_path: null,
+    slot_path: 42
+  });
   assert.equal(cli.shouldRenderInteractiveInit({ options: { prompt: true }, command: ['init'] }, 'init'), true);
-  assert.equal(cli.shouldRenderInteractiveInit({ options: { prompt: true, json: true }, command: ['init'] }, 'init'), false);
+  assert.equal(
+    cli.shouldRenderInteractiveInit({ options: { prompt: true, json: true }, command: ['init'] }, 'init'),
+    false
+  );
   assert.match(cli.renderInteractiveError(new Error('boom')), /Init failed \[/);
   assert.equal(cli.renderInteractiveError({ error: { message: 'partial' } }), 'Init failed [ERROR]: partial\n');
-  assert.equal(cli.renderInteractiveError({ error: { code: 'PARTIAL' } }), 'Init failed [PARTIAL]: docko init failed.\n');
+  assert.equal(
+    cli.renderInteractiveError({ error: { code: 'PARTIAL' } }),
+    'Init failed [PARTIAL]: docko init failed.\n'
+  );
   assert.equal(cli.renderInteractiveError({}), 'Init failed [UNEXPECTED_ERROR]: Unknown error\n');
   assert.match(
     cli.renderInitSummary({
@@ -788,7 +845,7 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
 
   let stdout = '';
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk, encoding, callback) => {
+  process.stdout.write = (chunk, encoding, callback) => {
     stdout += chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8') : String(chunk);
     if (typeof encoding === 'function') {
       encoding();
@@ -797,7 +854,7 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
       callback();
     }
     return true;
-  });
+  };
   try {
     cli.printText('plain text');
     cli.printText('already done\n');
@@ -844,12 +901,24 @@ test('CLI internals cover duplicate-slot and injected-instruction edge branches'
   } finally {
     process.chdir(originalCwd);
   }
-  await assert.rejects(() => cli.resolveDuplicateSource(root, 'missing-source'), /Source clone or slot directory not found/);
+  await assert.rejects(
+    () => cli.resolveDuplicateSource(root, 'missing-source'),
+    /Source clone or slot directory not found/
+  );
 
-  await assert.rejects(() => cli.duplicateSlotDirectory(root, emptySourceDir, 'copy-empty'), /Source clone directory is empty/);
+  await assert.rejects(
+    () => cli.duplicateSlotDirectory(root, emptySourceDir, 'copy-empty'),
+    /Source clone directory is empty/
+  );
   await mkdir(path.join(slotsRoot, 'slot-empty'), { recursive: true });
-  await assert.rejects(() => cli.duplicateSlotDirectory(root, 'slot-empty', 'copy-empty-slot'), /Source slot directory is empty/);
-  await assert.rejects(() => cli.duplicateSlotDirectory(root, 'slot-a', 'slot-a'), /Source and target slot paths must be different/);
+  await assert.rejects(
+    () => cli.duplicateSlotDirectory(root, 'slot-empty', 'copy-empty-slot'),
+    /Source slot directory is empty/
+  );
+  await assert.rejects(
+    () => cli.duplicateSlotDirectory(root, 'slot-a', 'slot-a'),
+    /Source and target slot paths must be different/
+  );
   await assert.rejects(() => cli.duplicateSlotDirectory(root, sourceDir, 'not-a-dir'), /not a directory/);
 
   await mkdir(path.join(slotsRoot, 'occupied'), { recursive: true });
@@ -885,7 +954,10 @@ test('CLI internals cover duplicate-slot and injected-instruction edge branches'
     start: '<!-- docko:begin:claude -->',
     end: '<!-- docko:end:claude -->'
   });
-  await assert.rejects(() => cli.injectManagedInstructions(root, 'oops', 'claude'), /EISDIR|illegal operation on a directory/i);
+  await assert.rejects(
+    () => cli.injectManagedInstructions(root, 'oops', 'claude'),
+    /EISDIR|illegal operation on a directory/i
+  );
 });
 
 test('CLI internals cover slot-acquire helpers for clone defaults and size reporting', async () => {
@@ -900,13 +972,15 @@ test('CLI internals cover slot-acquire helpers for clone defaults and size repor
   await writeFile(path.join(nestedDir, 'nested.txt'), 'nested\n', 'utf8');
 
   assert.deepEqual(
-    cli.listManagedSlots({
-      resources: [
-        { resource_type: 'shared-env', resource_id: 'staging', status: 'free', path: 'shared/staging' },
-        { resource_type: 'slot', resource_id: 'worker', status: 'claimed', path: 'slots/worker' },
-        { resource_type: 'slot', resource_id: 'main', status: 'free', path: 'slots/main' }
-      ]
-    }).map((resource) => resource.resource_id),
+    cli
+      .listManagedSlots({
+        resources: [
+          { resource_type: 'shared-env', resource_id: 'staging', status: 'free', path: 'shared/staging' },
+          { resource_type: 'slot', resource_id: 'worker', status: 'claimed', path: 'slots/worker' },
+          { resource_type: 'slot', resource_id: 'main', status: 'free', path: 'slots/main' }
+        ]
+      })
+      .map((resource) => resource.resource_id),
     ['main', 'worker']
   );
   assert.equal(cli.chooseDefaultCloneSource([{ resource_id: 'worker' }, { resource_id: 'main' }]), 'main');
@@ -950,10 +1024,7 @@ test('CLI internals cover slot-acquire helpers for clone defaults and size repor
 test('CLI internals cover immediate busy-slot clone confirmation and direct dist execution', async () => {
   const cli = await loadCliInternals();
 
-  assert.equal(
-    await cli.confirmBusySlotClone({ options: { prompt: false } }, 2, 'app-alpha'),
-    false
-  );
+  assert.equal(await cli.confirmBusySlotClone({ options: { prompt: false } }, 2, 'app-alpha'), false);
   assert.equal(
     await cli.confirmBusySlotClone({ options: { prompt: false, 'clone-when-busy': true } }, 2, 'app-alpha'),
     true
@@ -982,8 +1053,18 @@ test('CLI internals retry slot acquire when concurrent claims win or clone targe
       async status() {
         return {
           resources: [
-            { resource_type: 'slot', resource_id: 'app-alpha', status: 'free', path: path.join(racedRoot, 'slots', 'app-alpha') },
-            { resource_type: 'slot', resource_id: 'app-beta', status: 'free', path: path.join(racedRoot, 'slots', 'app-beta') }
+            {
+              resource_type: 'slot',
+              resource_id: 'app-alpha',
+              status: 'free',
+              path: path.join(racedRoot, 'slots', 'app-alpha')
+            },
+            {
+              resource_type: 'slot',
+              resource_id: 'app-beta',
+              status: 'free',
+              path: path.join(racedRoot, 'slots', 'app-beta')
+            }
           ]
         };
       },
@@ -1023,8 +1104,18 @@ test('CLI internals retry slot acquire when concurrent claims win or clone targe
       async status() {
         return {
           resources: [
-            { resource_type: 'slot', resource_id: 'app-alpha', status: 'claimed', path: path.join(cloneRoot, 'slots', 'app-alpha') },
-            { resource_type: 'slot', resource_id: 'app-beta', status: 'claimed', path: path.join(cloneRoot, 'slots', 'app-beta') }
+            {
+              resource_type: 'slot',
+              resource_id: 'app-alpha',
+              status: 'claimed',
+              path: path.join(cloneRoot, 'slots', 'app-alpha')
+            },
+            {
+              resource_type: 'slot',
+              resource_id: 'app-beta',
+              status: 'claimed',
+              path: path.join(cloneRoot, 'slots', 'app-beta')
+            }
           ]
         };
       },
@@ -1062,8 +1153,18 @@ test('CLI internals retry slot acquire when concurrent claims win or clone targe
       async status() {
         return {
           resources: [
-            { resource_type: 'slot', resource_id: 'main', status: 'claimed', path: path.join(defaultCloneRoot, 'slots', 'main') },
-            { resource_type: 'slot', resource_id: 'worker', status: 'claimed', path: path.join(defaultCloneRoot, 'slots', 'worker') }
+            {
+              resource_type: 'slot',
+              resource_id: 'main',
+              status: 'claimed',
+              path: path.join(defaultCloneRoot, 'slots', 'main')
+            },
+            {
+              resource_type: 'slot',
+              resource_id: 'worker',
+              status: 'claimed',
+              path: path.join(defaultCloneRoot, 'slots', 'worker')
+            }
           ]
         };
       },
@@ -1126,7 +1227,14 @@ test('CLI internals surface non-retryable slot acquire failures directly', async
       },
       async status() {
         return {
-          resources: [{ resource_type: 'slot', resource_id: 'app-alpha', status: 'free', path: path.join(claimRoot, 'slots', 'app-alpha') }]
+          resources: [
+            {
+              resource_type: 'slot',
+              resource_id: 'app-alpha',
+              status: 'free',
+              path: path.join(claimRoot, 'slots', 'app-alpha')
+            }
+          ]
         };
       },
       async claim() {
@@ -1148,7 +1256,14 @@ test('CLI internals surface non-retryable slot acquire failures directly', async
       },
       async status() {
         return {
-          resources: [{ resource_type: 'slot', resource_id: 'app-alpha', status: 'claimed', path: path.join(cloneRoot, 'slots', 'app-alpha') }]
+          resources: [
+            {
+              resource_type: 'slot',
+              resource_id: 'app-alpha',
+              status: 'claimed',
+              path: path.join(cloneRoot, 'slots', 'app-alpha')
+            }
+          ]
         };
       },
       async init() {
@@ -1208,7 +1323,7 @@ test('CLI prompt internals cover path retries, tty prompt sessions, and generic 
   let stderr = '';
   const originalWrite = process.stderr.write.bind(process.stderr);
   const originalIsTTY = process.stderr.isTTY;
-  process.stderr.write = ((chunk, encoding, callback) => {
+  process.stderr.write = (chunk, encoding, callback) => {
     stderr += chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8') : String(chunk);
     if (typeof encoding === 'function') {
       encoding();
@@ -1217,7 +1332,7 @@ test('CLI prompt internals cover path retries, tty prompt sessions, and generic 
       callback();
     }
     return true;
-  });
+  };
   Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
 
   try {
@@ -1493,8 +1608,14 @@ test('CLI direct commands cover prompt cancellation, explicit guide files, paylo
     )
   );
   assert.match(explicit.codex.agents_file, /meta\/AGENTS\.custom\.md$/);
-  assert.equal(explicit.injected_files.some((entry) => /guides\/CLAUDE\.custom\.md$/.test(entry.file)), true);
-  assert.equal(explicit.injected_files.some((entry) => /meta\/AGENTS\.custom\.md$/.test(entry.file)), true);
+  assert.equal(
+    explicit.injected_files.some((entry) => /guides\/CLAUDE\.custom\.md$/.test(entry.file)),
+    true
+  );
+  assert.equal(
+    explicit.injected_files.some((entry) => /meta\/AGENTS\.custom\.md$/.test(entry.file)),
+    true
+  );
 
   const countRoot = path.join(root, 'count-workspace');
   const countSource = path.join(root, 'count-source');

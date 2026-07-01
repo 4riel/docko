@@ -8,7 +8,7 @@ const STAGE_DIR = join(ROOT, '.publish', 'npm');
 const packageMap = {
   '@docko/core': 'packages/core',
   '@docko/cli': 'packages/cli',
-  '@docko/adapter-claude-code': 'packages/adapters/claude-code',
+  '@docko/adapter-claude-code': 'packages/adapters/claude-code'
 };
 
 const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
@@ -19,7 +19,7 @@ function runPnpmBuild() {
   const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
   const result = spawnSync(command, ['build'], {
     cwd: ROOT,
-    stdio: 'inherit',
+    stdio: 'inherit'
   });
 
   if ((result.status ?? 1) !== 0) {

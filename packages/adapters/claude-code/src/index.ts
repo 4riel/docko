@@ -35,7 +35,10 @@ export interface ClaudeCodeInstallResult {
 }
 
 export interface ClaudeCodeSettingsFragment {
-  hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string; timeout: number }> }>>;
+  hooks: Record<
+    string,
+    Array<{ matcher: string; hooks: Array<{ type: 'command'; command: string; timeout: number }> }>
+  >;
 }
 
 export type ClaudeCodeSnippetName = 'claude' | 'agents';
@@ -58,7 +61,9 @@ const HOOK_SCRIPT_COMMAND_PATH = `.claude-plugin/docko/scripts/${HOOK_SCRIPT_NAM
  * Returns the recommended Claude Code hook fragment for the target platform.
  * The fragment points to a checked-in Node launcher so hooks work without shell wrappers.
  */
-export function buildClaudeCodeSettingsFragment(platform: TargetPlatform = process.platform): ClaudeCodeSettingsFragment {
+export function buildClaudeCodeSettingsFragment(
+  platform: TargetPlatform = process.platform
+): ClaudeCodeSettingsFragment {
   return {
     hooks: {
       SessionStart: [toHookEntry(buildHookCommand('SessionStart', platform))],
@@ -163,7 +168,10 @@ function buildPluginManifest(version: string): Record<string, unknown> {
   };
 }
 
-function toHookEntry(hook: ClaudeHookCommand): { matcher: string; hooks: Array<{ type: 'command'; command: string; timeout: number }> } {
+function toHookEntry(hook: ClaudeHookCommand): {
+  matcher: string;
+  hooks: Array<{ type: 'command'; command: string; timeout: number }>;
+} {
   return {
     matcher: hook.matcher,
     hooks: [{ type: 'command', command: hook.command, timeout: 10 }]
@@ -197,7 +205,10 @@ function hookSubcommand(hookName: ClaudeHookName): ClaudeHookSubcommand {
   return 'subagent-start';
 }
 
-function buildHooksManifest(platform: TargetPlatform): { description: string; hooks: ClaudeCodeSettingsFragment['hooks'] } {
+function buildHooksManifest(platform: TargetPlatform): {
+  description: string;
+  hooks: ClaudeCodeSettingsFragment['hooks'];
+} {
   return {
     description: 'docko Claude Code hooks for slot claims, teammate inheritance, and session cleanup',
     hooks: buildClaudeCodeSettingsFragment(platform).hooks
@@ -314,15 +325,15 @@ async function mergeSettingsLocal(settingsPath: string, fragment: ClaudeCodeSett
     const existing = await readFile(settingsPath, 'utf8');
     baseDocument = JSON.parse(existing) as Record<string, unknown>;
   } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      baseDocument = {};
-    } else if (error instanceof SyntaxError) {
+    if (error instanceof SyntaxError) {
       throw new DockoError('Existing Claude settings.local.json is not valid JSON.', 'CLAUDE_SETTINGS_INVALID', 2, {
         path: settingsPath
       });
-    } else {
+    }
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') {
       throw error;
     }
+    // No settings file yet: keep the empty baseDocument initialized above.
   }
 
   const currentHooks = isRecord(baseDocument.hooks) ? baseDocument.hooks : {};

@@ -64,12 +64,37 @@
     "release:verify": "pnpm check && node scripts/prepare-publish-dir.mjs && node scripts/check-publish-manifests.mjs .publish/npm && npm pack --dry-run .publish/npm",
     "publish:alpha:dry-run": "pnpm check && node scripts/prepare-publish-dir.mjs && node scripts/check-publish-manifests.mjs .publish/npm && npm publish .publish/npm --tag alpha --dry-run",
     "test": "node scripts/build-workspace.mjs && node scripts/run-node-tests.mjs --test-concurrency=1",
-    "test:coverage": "node scripts/build-workspace.mjs && c8 --reporter=text --all --include=\"packages/core/dist/*.js\" --include=\"packages/cli/dist/*.js\" --include=\"packages/adapters/claude-code/dist/*.js\" node scripts/run-node-tests.mjs --test-concurrency=1"
+    "test:coverage": "node scripts/build-workspace.mjs && c8 --reporter=text --all --include=\"packages/core/dist/*.js\" --include=\"packages/cli/dist/*.js\" --include=\"packages/adapters/claude-code/dist/*.js\" node scripts/run-node-tests.mjs --test-concurrency=1",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "version:set": "node scripts/bump-version.mjs",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,mjs,cjs,json,yml,yaml}": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.0",
+    "@commitlint/config-conventional": "^21.2.0",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.5.2",
     "c8": "^11.0.0",
-    "typescript": "^5.9.2"
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.4",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.62.1"
   },
   "dependencies": {
     "@docko/adapter-claude-code": "workspace:*",

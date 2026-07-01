@@ -78,8 +78,8 @@ test('MirrorSmith renders blank timestamps for invalid dates', () => {
     ]
   });
 
-  assert.match(mirror, /\| app-alpha \| CLAIMED \| feat\/test \| cover mirror \|  \| owner \| 0 \|/);
-  assert.match(mirror, /\| staging \| shared-env \| CLAIMED \|  \| owner \|  \|/);
+  assert.match(mirror, /\| app-alpha \| CLAIMED \| feat\/test \| cover mirror \| {2}\| owner \| 0 \|/);
+  assert.match(mirror, /\| staging \| shared-env \| CLAIMED \| {2}\| owner \| {2}\|/);
 });
 
 test('MirrorSmith renders free slots with empty claim cells and omits the other-resources section when unused', () => {
@@ -102,7 +102,7 @@ test('MirrorSmith renders free slots with empty claim cells and omits the other-
     ]
   });
 
-  assert.match(mirror, /\| app-free \| FREE \|  \|  \|  \|  \| 0 \|/);
+  assert.match(mirror, /\| app-free \| FREE \| {2}\| {2}\| {2}\| {2}\| 0 \|/);
   assert.doesNotMatch(mirror, /## Other Resources/);
 });
 
@@ -145,10 +145,13 @@ test('RegistryScribe rejects structurally invalid registry shapes', async () => 
     'utf8'
   );
 
-  await assert.rejects(() => scribe.ensureRegistry(), (error) => {
-    assert.equal(error.code, 'CORRUPTED_REGISTRY');
-    return true;
-  });
+  await assert.rejects(
+    () => scribe.ensureRegistry(),
+    (error) => {
+      assert.equal(error.code, 'CORRUPTED_REGISTRY');
+      return true;
+    }
+  );
 });
 
 test('RegistryScribe normalizes optional config and delegations fields when loading registry state', async () => {
@@ -297,7 +300,13 @@ test('DockoService covers getPaths, render, missing resources, release reasons, 
   await service.sessionStart({ sessionId: 'child', runtime: 'shell', workspaceRoot: root });
   await service.claim({ sessionId: 'leader', resourceType: 'slot', resourceId: 'app-alpha' });
 
-  await service.delegate({ sessionId: 'leader', childSessionId: 'child', resourceType: 'slot', resourceId: 'app-alpha', scope: 'read' });
+  await service.delegate({
+    sessionId: 'leader',
+    childSessionId: 'child',
+    resourceType: 'slot',
+    resourceId: 'app-alpha',
+    scope: 'read'
+  });
   const updatedDelegation = await service.delegate({
     sessionId: 'leader',
     childSessionId: 'child',
@@ -320,14 +329,20 @@ test('DockoService covers getPaths, render, missing resources, release reasons, 
   const mirror = await readFile(path.join(root, 'docko', 'registry.md'), 'utf8');
   assert.match(mirror, /## Slots/);
 
-  await assert.rejects(() => service.release({ sessionId: 'leader', resourceType: 'slot', resourceId: 'missing-slot' }), (error) => {
-    assert.equal(error.code, 'RESOURCE_NOT_FOUND');
-    return true;
-  });
+  await assert.rejects(
+    () => service.release({ sessionId: 'leader', resourceType: 'slot', resourceId: 'missing-slot' }),
+    (error) => {
+      assert.equal(error.code, 'RESOURCE_NOT_FOUND');
+      return true;
+    }
+  );
 
   const logs = await service.logs({ limit: 20 });
   assert.equal(logs.retention_days, 3);
-  assert.equal(logs.entries.some((entry) => entry.operation === 'claim' && entry.outcome === 'ok'), true);
+  assert.equal(
+    logs.entries.some((entry) => entry.operation === 'claim' && entry.outcome === 'ok'),
+    true
+  );
   assert.equal(
     logs.entries.some(
       (entry) =>
@@ -406,15 +421,16 @@ test('LogScribe covers missing-dir, malformed-line, and non-directory error path
   await mkdir(malformedLogDir, { recursive: true });
   await writeFile(
     path.join(malformedLogDir, '2026-01-02.jsonl'),
-    ['{"timestamp":"2026-01-02T10:00:00.000Z","operation":"good","outcome":"ok","session_id":null,"resource_type":null,"resource_id":null}', '{not-json}', ''].join('\n'),
+    [
+      '{"timestamp":"2026-01-02T10:00:00.000Z","operation":"good","outcome":"ok","session_id":null,"resource_type":null,"resource_id":null}',
+      '{not-json}',
+      ''
+    ].join('\n'),
     'utf8'
   );
 
   const malformedLogs = new LogScribe(malformedRoot);
-  const listed = await malformedLogs.list(
-    { days: 0, limit: Number.NaN },
-    new Date('2026-01-02T12:00:00.000Z')
-  );
+  const listed = await malformedLogs.list({ days: 0, limit: Number.NaN }, new Date('2026-01-02T12:00:00.000Z'));
   assert.equal(listed.days, 3);
   assert.deepEqual(
     listed.entries.map((entry) => entry.operation),
@@ -461,7 +477,9 @@ test('StaleJanitor releases claims with invalid timestamps', () => {
           stale_after_ms: 1000,
           release_reason: null
         },
-        delegations: [{ child_session_id: 'child', granted_by_session_id: 'owner', granted_at: now.toISOString(), scope: 'write' }]
+        delegations: [
+          { child_session_id: 'child', granted_by_session_id: 'owner', granted_at: now.toISOString(), scope: 'write' }
+        ]
       }
     ]
   };
@@ -801,10 +819,13 @@ test('DockoService keeps logging best-effort on success and error paths', async 
   const session = await service.sessionStart({ sessionId: 'leader', runtime: 'shell', workspaceRoot: root });
   assert.equal(session.session_id, 'leader');
 
-  await assert.rejects(() => service.sessionCurrent('missing'), (error) => {
-    assert.equal(error.code, 'SESSION_NOT_FOUND');
-    return true;
-  });
+  await assert.rejects(
+    () => service.sessionCurrent('missing'),
+    (error) => {
+      assert.equal(error.code, 'SESSION_NOT_FOUND');
+      return true;
+    }
+  );
 });
 
 test('DockoService ends delegated child sessions when the parent session ends', async () => {

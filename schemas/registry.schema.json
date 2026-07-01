@@ -4,13 +4,7 @@
   "title": "docko registry",
   "description": "Canonical registry document for docko workspace metadata, resources, claims, and delegations. Session manifests live separately under docko/sessions/.",
   "type": "object",
-  "required": [
-    "schema_version",
-    "generated_at",
-    "workspace",
-    "applications",
-    "resources"
-  ],
+  "required": ["schema_version", "generated_at", "workspace", "applications", "resources"],
   "properties": {
     "schema_version": {
       "type": "string",
@@ -46,11 +40,7 @@
     },
     "workspace": {
       "type": "object",
-      "required": [
-        "workspace_id",
-        "workspace_root",
-        "name"
-      ],
+      "required": ["workspace_id", "workspace_root", "name"],
       "properties": {
         "workspace_id": {
           "$ref": "#/$defs/safeId"
@@ -96,10 +86,7 @@
     },
     "application": {
       "type": "object",
-      "required": [
-        "application_id",
-        "name"
-      ],
+      "required": ["application_id", "name"],
       "properties": {
         "application_id": {
           "$ref": "#/$defs/safeId"
@@ -108,10 +95,7 @@
           "type": "string"
         },
         "description": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "keywords": {
           "type": "array",
@@ -120,21 +104,14 @@
           }
         },
         "source_path": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       },
       "additionalProperties": true
     },
     "resource": {
       "type": "object",
-      "required": [
-        "resource_type",
-        "resource_id",
-        "status"
-      ],
+      "required": ["resource_type", "resource_id", "status"],
       "properties": {
         "resource_type": {
           "$ref": "#/$defs/safeId",
@@ -144,10 +121,7 @@
           "$ref": "#/$defs/safeId"
         },
         "path": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "description": "Path relative to the workspace root when the resource is filesystem-backed."
         },
         "application_id": {
@@ -174,10 +148,7 @@
         },
         "status": {
           "type": "string",
-          "enum": [
-            "free",
-            "claimed"
-          ]
+          "enum": ["free", "claimed"]
         },
         "claim": {
           "description": "Current exclusive ownership record for a claimed resource. Free resources usually serialize this as null.",
@@ -206,14 +177,10 @@
                 "const": "claimed"
               }
             },
-            "required": [
-              "status"
-            ]
+            "required": ["status"]
           },
           "then": {
-            "required": [
-              "claim"
-            ],
+            "required": ["claim"],
             "properties": {
               "claim": {
                 "$ref": "#/$defs/claim"
@@ -242,22 +209,13 @@
           "$ref": "#/$defs/safeId"
         },
         "runtime": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "branch": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "task": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "claimed_at": {
           "type": "string",
@@ -268,10 +226,7 @@
           "format": "date-time"
         },
         "heartbeat_at": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "format": "date-time"
         },
         "stale_after_ms": {
@@ -279,10 +234,7 @@
           "minimum": 1
         },
         "release_reason": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "description": "Null while the claim is active. Release snapshots may use values such as manual, force-release, or stale-recovery."
         }
       },
@@ -290,12 +242,7 @@
     },
     "delegation": {
       "type": "object",
-      "required": [
-        "child_session_id",
-        "granted_by_session_id",
-        "granted_at",
-        "scope"
-      ],
+      "required": ["child_session_id", "granted_by_session_id", "granted_at", "scope"],
       "properties": {
         "child_session_id": {
           "$ref": "#/$defs/safeId"
@@ -309,10 +256,7 @@
         },
         "scope": {
           "type": "string",
-          "enum": [
-            "read",
-            "write"
-          ]
+          "enum": ["read", "write"]
         }
       },
       "additionalProperties": true

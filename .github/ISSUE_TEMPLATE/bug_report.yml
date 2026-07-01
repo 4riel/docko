@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a problem with the docko CLI or protocol
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the
+        fields below. For security vulnerabilities, do not open an issue —
+        follow SECURITY.md and report privately instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I ran a docko command, I saw...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: >
+        Steps to reproduce the behavior. Include the exact `docko` command you
+        ran, including `--root` and any other options, plus the output.
+      placeholder: |
+        1. docko init --root ./my-workspace ...
+        2. docko claim --root ./my-workspace ...
+        3. Observed output / error:
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: docko-version
+    attributes:
+      label: docko version
+      description: Output of `docko --version`.
+      placeholder: e.g. 0.1.0-alpha.x
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version` (docko requires Node >= 22).
+      placeholder: e.g. v22.11.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS name and version.
+      placeholder: e.g. Windows 11, macOS 14, Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: >
+        Anything else that helps — registry state, session manifests, logs, or
+        related configuration.
+    validations:
+      required: false

@@ -129,10 +129,7 @@ test('LockBouncer covers no-claim and claimed-resource denial branches', () => {
     delegations: []
   };
 
-  assert.throws(
-    () => bouncer.requireOwner(freeResource, 'owner'),
-    /Resource is not claimed/
-  );
+  assert.throws(() => bouncer.requireOwner(freeResource, 'owner'), /Resource is not claimed/);
 
   const claimedResource = {
     ...freeResource,
@@ -150,10 +147,7 @@ test('LockBouncer covers no-claim and claimed-resource denial branches', () => {
     }
   };
 
-  assert.throws(
-    () => bouncer.requireClaimable(claimedResource),
-    /Resource is already claimed/
-  );
+  assert.throws(() => bouncer.requireClaimable(claimedResource), /Resource is already claimed/);
 });
 
 test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed authorization paths', () => {

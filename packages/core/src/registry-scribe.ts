@@ -5,13 +5,7 @@ import { atomicWriteJson, atomicWriteText, ensureDir, isEnoent, listDirectories,
 import { MirrorSmith } from './mirror-smith.js';
 import { getPaths, type DockoPaths } from './paths.js';
 import { SCHEMA_VERSION } from './constants.js';
-import type {
-  RegistryDocument,
-  RegistryResource,
-  ResourceType,
-  StatusResult,
-  WorkspaceApplication
-} from './types.js';
+import type { RegistryDocument, RegistryResource, ResourceType, StatusResult, WorkspaceApplication } from './types.js';
 
 function qualifySlotResourceId(applicationId: string | null | undefined, slotName: string): string {
   return applicationId ? `${applicationId}.${slotName}` : slotName;
@@ -54,12 +48,9 @@ export class RegistryScribe {
         await this.writeRegistry(fresh);
         return fresh;
       }
-      throw new DockoError(
-        'Registry file is corrupted or invalid.',
-        'CORRUPTED_REGISTRY',
-        5,
-        { registry_path: this.paths.registryPath }
-      );
+      throw new DockoError('Registry file is corrupted or invalid.', 'CORRUPTED_REGISTRY', 5, {
+        registry_path: this.paths.registryPath
+      });
     }
     this.validateRegistry(registry);
     return this.cloneRegistry(registry);
@@ -72,11 +63,7 @@ export class RegistryScribe {
     await atomicWriteText(this.paths.mirrorPath, this.mirrorSmith.render(next));
   }
 
-  buildStatus(
-    registry: RegistryDocument,
-    resourceType?: string,
-    resourceId?: string
-  ): Omit<StatusResult, 'janitor'> {
+  buildStatus(registry: RegistryDocument, resourceType?: string, resourceId?: string): Omit<StatusResult, 'janitor'> {
     return {
       schema_version: registry.schema_version,
       workspace: registry.workspace,
@@ -195,9 +182,7 @@ export class RegistryScribe {
         config: registry.workspace.config
           ? {
               ...registry.workspace.config,
-              janitor: registry.workspace.config.janitor
-                ? { ...registry.workspace.config.janitor }
-                : undefined,
+              janitor: registry.workspace.config.janitor ? { ...registry.workspace.config.janitor } : undefined,
               scheduler: registry.workspace.config.scheduler
                 ? { last_slot_id: { ...(registry.workspace.config.scheduler.last_slot_id ?? {}) } }
                 : undefined
@@ -268,12 +253,9 @@ export class RegistryScribe {
       !Array.isArray(registry.resources) ||
       ('applications' in registry && !Array.isArray(registry.applications))
     ) {
-      throw new DockoError(
-        'Registry file is corrupted or invalid.',
-        'CORRUPTED_REGISTRY',
-        5,
-        { registry_path: this.paths.registryPath }
-      );
+      throw new DockoError('Registry file is corrupted or invalid.', 'CORRUPTED_REGISTRY', 5, {
+        registry_path: this.paths.registryPath
+      });
     }
   }
 }

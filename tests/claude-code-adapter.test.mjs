@@ -2,7 +2,7 @@ import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import {
   ensureBuiltArtifacts,
   makeWorkspace,
@@ -63,7 +63,7 @@ test('Claude adapter reads both managed snippets from the installed package temp
 });
 
 test('Claude adapter install writes repo-local assets and merges settings idempotently', async () => {
-  const { installClaudeCodeAdapter } = await loadAdapterModule();
+  await loadAdapterModule();
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
   await mkdir(path.join(root, '.claude'), { recursive: true });
@@ -73,21 +73,23 @@ test('Claude adapter install writes repo-local assets and merges settings idempo
     'utf8'
   );
 
-  const first = parseStdout(await runCli(['adapter', 'claude-code', 'install', '--root', root, '--write-settings-local']));
-  const second = parseStdout(await runCli(['adapter', 'claude-code', 'install', '--root', root, '--write-settings-local']));
+  const first = parseStdout(
+    await runCli(['adapter', 'claude-code', 'install', '--root', root, '--write-settings-local'])
+  );
+  const second = parseStdout(
+    await runCli(['adapter', 'claude-code', 'install', '--root', root, '--write-settings-local'])
+  );
 
   assert.ok(
-    first.written_files.some(
-      (file) => path.normalize(file).endsWith(path.join('.claude-plugin', 'docko', 'plugin.json'))
+    first.written_files.some((file) =>
+      path.normalize(file).endsWith(path.join('.claude-plugin', 'docko', 'plugin.json'))
     )
   );
   assert.ok(second);
 
   // The generated plugin manifest must stamp the live adapter version, never a hardcoded literal
   // that drifts between releases.
-  const pluginManifest = JSON.parse(
-    await readFile(path.join(root, '.claude-plugin', 'docko', 'plugin.json'), 'utf8')
-  );
+  const pluginManifest = JSON.parse(await readFile(path.join(root, '.claude-plugin', 'docko', 'plugin.json'), 'utf8'));
   const adapterPackage = JSON.parse(
     await readFile(path.join(repoRoot, 'packages', 'adapters', 'claude-code', 'package.json'), 'utf8')
   );
@@ -113,12 +115,18 @@ test('Claude adapter install writes repo-local assets and merges settings idempo
 
   const claudeSnippet = await readFile(path.join(root, '.claude', 'snippets', 'CLAUDE.docko.md'), 'utf8');
   assert.match(claudeSnippet, /Quick path:/);
-  assert.match(claudeSnippet, /If every slot is busy and docko asks whether it should create a fresh managed clone, answer explicitly/);
+  assert.match(
+    claudeSnippet,
+    /If every slot is busy and docko asks whether it should create a fresh managed clone, answer explicitly/
+  );
   assert.match(claudeSnippet, /Do not inspect slots one by one or use `docko\/registry\.json` as a normal fallback/);
 
   const agentsSnippet = await readFile(path.join(root, '.claude', 'snippets', 'AGENTS.docko.md'), 'utf8');
   assert.match(agentsSnippet, /Quick path:/);
-  assert.match(agentsSnippet, /If `docko` is not runnable, check `DOCKO_BIN`|If `docko` is not on PATH, try `DOCKO_BIN`/);
+  assert.match(
+    agentsSnippet,
+    /If `docko` is not runnable, check `DOCKO_BIN`|If `docko` is not on PATH, try `DOCKO_BIN`/
+  );
   assert.match(agentsSnippet, /Do not inspect slots one by one or use `docko\/registry\.json` as a normal fallback/);
 });
 
@@ -127,7 +135,11 @@ test('Installed Claude settings commands run real session and write-authorizatio
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
   await installClaudeCodeAdapter({ workspaceRoot: root, writeSettingsLocal: true });
-  const dockoBinCommand = `node ${JSON.stringify(path.join(repoRoot, 'bin', 'docko.js'))}`;
+  // The hook launcher only opts into a shell on Windows. On POSIX (shell: false) DOCKO_BIN must be
+  // a single spawnable executable, so point it straight at the shebang'd, build-chmodded bin; on
+  // Windows a multi-token `node "<path>"` works because the shell re-parses it.
+  const dockoScript = path.join(repoRoot, 'bin', 'docko.js');
+  const dockoBinCommand = process.platform === 'win32' ? `node ${JSON.stringify(dockoScript)}` : dockoScript;
 
   const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
   const sessionStartCommand = settings.hooks.SessionStart[0].hooks[0].command;

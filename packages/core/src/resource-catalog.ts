@@ -1,8 +1,4 @@
-import {
-  DEFAULT_CUSTOM_STALE_MS,
-  DEFAULT_SHARED_ENV_STALE_MS,
-  DEFAULT_SLOT_STALE_MS
-} from './constants.js';
+import { DEFAULT_CUSTOM_STALE_MS, DEFAULT_SHARED_ENV_STALE_MS, DEFAULT_SLOT_STALE_MS } from './constants.js';
 import type { EnsureResourceOptions, RegistryDocument, RegistryResource } from './types.js';
 import { RegistryScribe } from './registry-scribe.js';
 import { DockoError } from './errors.js';
@@ -30,22 +26,14 @@ export class ResourceCatalog {
     return DEFAULT_CUSTOM_STALE_MS;
   }
 
-  async ensure(
-    registry: RegistryDocument,
-    options: EnsureResourceOptions
-  ): Promise<RegistryResource> {
+  async ensure(registry: RegistryDocument, options: EnsureResourceOptions): Promise<RegistryResource> {
     const existing = this.registryScribe.getResource(registry, options.resourceType, options.resourceId);
     if (existing) {
       if (options.path !== undefined && existing.status === 'claimed' && options.path !== existing.path) {
-        throw new DockoError(
-          'Cannot modify the path of a claimed resource.',
-          'RESOURCE_MUTATION_DENIED',
-          2,
-          {
-            resource_type: options.resourceType,
-            resource_id: options.resourceId
-          }
-        );
+        throw new DockoError('Cannot modify the path of a claimed resource.', 'RESOURCE_MUTATION_DENIED', 2, {
+          resource_type: options.resourceType,
+          resource_id: options.resourceId
+        });
       }
 
       if (options.path !== undefined && existing.resource_type !== 'slot') {
@@ -67,11 +55,6 @@ export class ResourceCatalog {
       });
     }
 
-    return this.registryScribe.upsertResource(
-      registry,
-      options.resourceType,
-      options.resourceId,
-      options.path ?? null
-    );
+    return this.registryScribe.upsertResource(registry, options.resourceType, options.resourceId, options.path ?? null);
   }
 }

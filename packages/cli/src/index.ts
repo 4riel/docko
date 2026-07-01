@@ -190,17 +190,17 @@ function parseQualifiedSlotId(rawValue: string): { applicationId: string; slotNa
 }
 
 function resolveManagedSlotPath(root: string, slotName: string, applicationId?: string | null): string {
-  return applicationId
-    ? path.join(root, 'slots', applicationId, slotName)
-    : path.join(root, 'slots', slotName);
+  return applicationId ? path.join(root, 'slots', applicationId, slotName) : path.join(root, 'slots', slotName);
 }
 
 function buildDefaultApplicationName(applicationId: string): string {
-  return applicationId
-    .split(/[-_.]+/)
-    .filter(Boolean)
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ') || applicationId;
+  return (
+    applicationId
+      .split(/[-_.]+/)
+      .filter(Boolean)
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(' ') || applicationId
+  );
 }
 
 async function readJsonStdin(): Promise<Record<string, unknown>> {
@@ -411,12 +411,11 @@ function parsePositiveInt(raw: string | null, label: string): number | undefined
 
 function parseEnum<T extends string>(raw: string, allowed: readonly T[], label: string): T {
   if (!allowed.includes(raw as T)) {
-  throw new DockoError(
-      `--${label} must be one of: ${allowed.join(', ')}`,
-      'USAGE_ERROR',
-      1,
-      { option: label, value: raw, allowed: [...allowed] }
-    );
+    throw new DockoError(`--${label} must be one of: ${allowed.join(', ')}`, 'USAGE_ERROR', 1, {
+      option: label,
+      value: raw,
+      allowed: [...allowed]
+    });
   }
   return raw as T;
 }
@@ -508,11 +507,7 @@ async function isDirectory(targetPath: string): Promise<boolean> {
 
 async function detectInstructionFile(root: string, filename: string): Promise<string | null> {
   const preferredDirectories =
-    filename === 'CLAUDE.md'
-      ? ['', '.claude', 'docs']
-      : filename === 'AGENTS.md'
-        ? ['', 'docs', '.claude']
-        : [''];
+    filename === 'CLAUDE.md' ? ['', '.claude', 'docs'] : filename === 'AGENTS.md' ? ['', 'docs', '.claude'] : [''];
   const candidates = preferredDirectories.map((directory) =>
     directory ? path.join(root, directory, filename) : path.join(root, filename)
   );
@@ -578,10 +573,7 @@ function buildInstructionExamples(root: string, filename: string): string[] {
       return ['AGENTS.md', 'docs/AGENTS.md'];
     }
 
-    return uniqueStrings([
-      ...workspaceExamples,
-      'AGENTS.md'
-    ]);
+    return uniqueStrings([...workspaceExamples, 'AGENTS.md']);
   }
 
   return buildPathExamples([path.join(root, filename), path.resolve(process.cwd(), filename)]);
@@ -851,7 +843,7 @@ async function inspectRoot(root: string): Promise<RootCheckResult> {
   const looksLikeRepo = rootExists ? await looksLikeRepoDirectory(resolvedRoot) : false;
   const looksLikeWorkspace = rootExists && rootIsDirectory ? await pathExists(path.join(resolvedRoot, 'docko')) : false;
 
-  let message = '';
+  let message: string;
   if (!parentExists) {
     message = `Root check: parent folder does not exist yet for ${resolvedRoot}.`;
   } else if (!rootExists) {
@@ -947,19 +939,11 @@ function renderInitIntro(root: string): string {
   return `${lines.join('\n')}\n\n`;
 }
 
-async function promptText(
-  session: PromptSession,
-  label: string,
-  defaultValue: string | null = null
-): Promise<string> {
+async function promptText(session: PromptSession, label: string, defaultValue: string | null = null): Promise<string> {
   return session.askText(label, defaultValue);
 }
 
-async function promptYesNo(
-  session: PromptSession,
-  label: string,
-  defaultValue: boolean
-): Promise<boolean> {
+async function promptYesNo(session: PromptSession, label: string, defaultValue: boolean): Promise<boolean> {
   return session.askYesNo(label, defaultValue);
 }
 
@@ -1060,15 +1044,14 @@ async function collectInitPromptConfig(
   const defaultCloneSlot = option(context.options, 'clone-slot') ?? optionList(context.options, 'slot')[0] ?? 'main';
 
   if (!promptEnabled(context.options)) {
-    const cloneJobs =
-      defaultCloneSource
-        ? [
-            {
-              sourcePath: await resolveCloneSourceInput(context.root, defaultCloneSource),
-              slotId: defaultCloneSlot
-            }
-          ]
-        : [];
+    const cloneJobs = defaultCloneSource
+      ? [
+          {
+            sourcePath: await resolveCloneSourceInput(context.root, defaultCloneSource),
+            slotId: defaultCloneSlot
+          }
+        ]
+      : [];
 
     return {
       claude: {
@@ -1135,13 +1118,15 @@ async function collectInitPromptConfig(
         claudeFilePath = detectedClaudeFile;
       } else {
         const claudeExamples = buildInstructionExamples(context.root, 'CLAUDE.md');
-        process.stderr.write(
-          `I couldn't find CLAUDE.md automatically.\nExamples: ${claudeExamples.join(', ')}\n`
-        );
+        process.stderr.write(`I couldn't find CLAUDE.md automatically.\nExamples: ${claudeExamples.join(', ')}\n`);
         const rawClaudeFile = await promptText(session, 'Where should I read or write CLAUDE.md?', defaultClaudeFile);
         claudeFilePath = resolveWorkspacePath(context.root, rawClaudeFile);
       }
-      injectClaude = await promptYesNo(session, 'Can I inject the docko Claude instructions there?', injectClaude || true);
+      injectClaude = await promptYesNo(
+        session,
+        'Can I inject the docko Claude instructions there?',
+        injectClaude || true
+      );
     }
 
     let agentsFilePath: string | null = null;
@@ -1157,22 +1142,20 @@ async function collectInitPromptConfig(
         agentsFilePath = detectedAgentsFile;
       } else {
         const agentsExamples = buildInstructionExamples(context.root, 'AGENTS.md');
-        process.stderr.write(
-          `I couldn't find AGENTS.md automatically.\nExamples: ${agentsExamples.join(', ')}\n`
-        );
+        process.stderr.write(`I couldn't find AGENTS.md automatically.\nExamples: ${agentsExamples.join(', ')}\n`);
         const rawAgentsFile = await promptText(session, 'Where should I read or write AGENTS.md?', defaultAgentsFile);
         agentsFilePath = resolveWorkspacePath(context.root, rawAgentsFile);
       }
       injectCodex = await promptYesNo(session, 'Can I inject the docko Codex instructions there?', injectCodex || true);
     }
 
-  const cloneJobs: InitCloneJob[] = [];
-  const usedSlotIds = new Set(optionList(context.options, 'slot').map((slotId) => sanitizeSlotId(slotId)));
-  const cloneSourceExamples = buildCloneSourceExamples(context.root);
-  const existingCloneExamples = buildExistingCloneExamples(context.root);
-  const existingMode = Boolean(context.options.existing);
+    const cloneJobs: InitCloneJob[] = [];
+    const usedSlotIds = new Set(optionList(context.options, 'slot').map((slotId) => sanitizeSlotId(slotId)));
+    const cloneSourceExamples = buildCloneSourceExamples(context.root);
+    const existingCloneExamples = buildExistingCloneExamples(context.root);
+    const existingMode = Boolean(context.options.existing);
 
-  process.stderr.write('\nClone setup:\n');
+    process.stderr.write('\nClone setup:\n');
     if (existingMode) {
       process.stderr.write(
         'You said this workspace already has clones or slots. List the folders you want docko to import as managed slots.\n'
@@ -1196,12 +1179,21 @@ async function collectInitPromptConfig(
       );
       process.stderr.write('Then I can create fresh managed clones under `slots/`.\n');
 
-      const originalRepository = await promptConfirmedCloneSource(session, context.root, defaultCloneSource ?? '', cloneSourceExamples);
+      const originalRepository = await promptConfirmedCloneSource(
+        session,
+        context.root,
+        defaultCloneSource ?? '',
+        cloneSourceExamples
+      );
 
       if (originalRepository) {
         let cloneCount = 1;
         while (true) {
-          const rawCloneCount = await promptText(session, 'How many managed clones should I create from that primary repo?', '1');
+          const rawCloneCount = await promptText(
+            session,
+            'How many managed clones should I create from that primary repo?',
+            '1'
+          );
           try {
             cloneCount = parsePositivePromptCount(rawCloneCount, 'Managed clone count');
             break;
@@ -1352,7 +1344,11 @@ async function duplicateSlotDirectory(
     assertSafeId(applicationId, 'application');
   }
 
-  const { source_path: sourcePath, source_kind: sourceKind } = await resolveDuplicateSource(root, rawSource, applicationId);
+  const { source_path: sourcePath, source_kind: sourceKind } = await resolveDuplicateSource(
+    root,
+    rawSource,
+    applicationId
+  );
   const targetPath = resolveManagedSlotPath(root, targetSlotName, applicationId);
   const validationError = await validateCloneSourceDirectory(sourcePath);
 
@@ -1400,7 +1396,9 @@ async function duplicateSlotDirectory(
   };
 }
 
-function sortSlotResources<T extends { resource_id: string; application_id?: string | null; slot_name?: string | null }>(resources: T[]): T[] {
+function sortSlotResources<
+  T extends { resource_id: string; application_id?: string | null; slot_name?: string | null }
+>(resources: T[]): T[] {
   return [...resources].sort((left, right) => left.resource_id.localeCompare(right.resource_id));
 }
 
@@ -1410,7 +1408,10 @@ function listManagedSlots(status: { resources: SlotResourceSummary[] }) {
   );
 }
 
-function filterSlotsByApplication(slotResources: SlotResourceSummary[], applicationId: string | null): SlotResourceSummary[] {
+function filterSlotsByApplication(
+  slotResources: SlotResourceSummary[],
+  applicationId: string | null
+): SlotResourceSummary[] {
   if (!applicationId) {
     return slotResources;
   }
@@ -1472,9 +1473,7 @@ function compactStatus(status: StatusResult): Record<string, unknown> {
 }
 
 function compactSlotAcquire(result: Record<string, unknown>): Record<string, unknown> {
-  const clone = result.clone && typeof result.clone === 'object'
-    ? (result.clone as Record<string, unknown>)
-    : null;
+  const clone = result.clone && typeof result.clone === 'object' ? (result.clone as Record<string, unknown>) : null;
 
   return {
     ok: result.ok,
@@ -1516,7 +1515,10 @@ function compactSessionList(result: { active_sessions: SessionManifest[] }): Rec
 }
 
 function normalizeApplicationMatchText(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function scoreApplicationMatch(application: ApplicationSummary, matchText: string): number {
@@ -1524,11 +1526,7 @@ function scoreApplicationMatch(application: ApplicationSummary, matchText: strin
     return 0;
   }
 
-  const terms = [
-    application.application_id,
-    application.name,
-    ...(application.keywords ?? [])
-  ]
+  const terms = [application.application_id, application.name, ...(application.keywords ?? [])]
     .map((entry) => normalizeApplicationMatchText(entry))
     .filter(Boolean);
 
@@ -1576,7 +1574,10 @@ function resolveSelectedApplication(
       score: scoreApplicationMatch(application, matchText)
     }))
     .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.application.application_id.localeCompare(right.application.application_id));
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.application.application_id.localeCompare(right.application.application_id)
+    );
 
   if (scored.length === 0) {
     return null;
@@ -1588,7 +1589,9 @@ function resolveSelectedApplication(
       'AMBIGUOUS_APPLICATION',
       1,
       {
-        applications: scored.filter((entry) => entry.score === scored[0].score).map((entry) => entry.application.application_id)
+        applications: scored
+          .filter((entry) => entry.score === scored[0].score)
+          .map((entry) => entry.application.application_id)
       }
     );
   }
@@ -1748,7 +1751,7 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
   const explicitApplicationId = option(context.options, 'application');
   const preferredCloneSource = option(context.options, 'clone-from');
   const preferredCloneSlot = option(context.options, 'clone-slot');
-  let approvedCloneFallback: boolean | null = Boolean(context.options['clone-when-busy']) ? true : null;
+  let approvedCloneFallback: boolean | null = context.options['clone-when-busy'] ? true : null;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const status = await context.service.status('slot');
@@ -1783,7 +1786,9 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
       const orderedFreeSlots = rotateFreeSlotsByCursor(slotResources, freeSlots, lastSlotId);
       for (const freeSlot of orderedFreeSlots) {
         try {
-          const claim = await context.service.claim(buildSlotClaimOptions(context, sessionId, freeSlot.resource_id, schedulerKey));
+          const claim = await context.service.claim(
+            buildSlotClaimOptions(context, sessionId, freeSlot.resource_id, schedulerKey)
+          );
           return {
             ok: true,
             action: 'claimed-existing-slot',
@@ -1927,7 +1932,11 @@ async function ensureApplication(context: CliContext): Promise<Record<string, un
       continue;
     }
 
-    await ensureDirectory(resolveManagedSlotPath(context.root, slotName, application.application_id), createdDirectories, context.root);
+    await ensureDirectory(
+      resolveManagedSlotPath(context.root, slotName, application.application_id),
+      createdDirectories,
+      context.root
+    );
   }
 
   const registry = await context.service.init();
@@ -2013,15 +2022,16 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
     );
   }
   if (!rootCheck.isDirectory) {
-    throw new DockoError(
-      'The --root path exists but is not a directory.',
-      'ROOT_NOT_DIRECTORY',
-      1,
-      { root: rootCheck.root }
-    );
+    throw new DockoError('The --root path exists but is not a directory.', 'ROOT_NOT_DIRECTORY', 1, {
+      root: rootCheck.root
+    });
   }
 
-  const requestedMode = parseEnum(option(context.options, 'mode') ?? 'auto', ['auto', 'workspace', 'repo'] as const, 'mode');
+  const requestedMode = parseEnum(
+    option(context.options, 'mode') ?? 'auto',
+    ['auto', 'workspace', 'repo'] as const,
+    'mode'
+  );
   const mode = await resolveInitMode(context.root, requestedMode);
   const slotStaleAfterMs = parsePositiveInt(option(context.options, 'slot-stale-after-ms'), 'slot-stale-after-ms');
   const effectivePromptConfig = promptConfig ?? (await collectInitPromptConfig(context, rootCheck));
@@ -2059,7 +2069,11 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
     : null;
 
   const injectedFiles: Array<{ file: string; injected: boolean; target: IntegrationTarget }> = [];
-  if (effectivePromptConfig.claude.enabled && effectivePromptConfig.claude.inject && effectivePromptConfig.claude.filePath) {
+  if (
+    effectivePromptConfig.claude.enabled &&
+    effectivePromptConfig.claude.inject &&
+    effectivePromptConfig.claude.filePath
+  ) {
     injectedFiles.push({
       ...(await injectManagedInstructions(
         effectivePromptConfig.claude.filePath,
@@ -2070,7 +2084,11 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
     });
   }
 
-  if (effectivePromptConfig.codex.enabled && effectivePromptConfig.codex.inject && effectivePromptConfig.codex.filePath) {
+  if (
+    effectivePromptConfig.codex.enabled &&
+    effectivePromptConfig.codex.inject &&
+    effectivePromptConfig.codex.filePath
+  ) {
     injectedFiles.push({
       ...(await injectManagedInstructions(
         effectivePromptConfig.codex.filePath,
@@ -2172,12 +2190,16 @@ function renderInitSummary(result: Record<string, unknown>): string {
   const starterSlots = stringList(result.starter_slots);
   const nextSteps = stringList(result.next_steps);
   const duplicatedSlots = Array.isArray(result.duplicated_slots)
-    ? result.duplicated_slots.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+    ? result.duplicated_slots.filter(
+        (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object'
+      )
     : [];
   const claude = result.claude && typeof result.claude === 'object' ? (result.claude as Record<string, unknown>) : null;
   const codex = result.codex && typeof result.codex === 'object' ? (result.codex as Record<string, unknown>) : null;
   const injectedFiles = Array.isArray(result.injected_files)
-    ? result.injected_files.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+    ? result.injected_files.filter(
+        (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object'
+      )
     : [];
 
   if (workspaceRoot) {
@@ -2224,9 +2246,7 @@ function renderInitSummary(result: Record<string, unknown>): string {
       injectedFiles.find((entry) => entry.target === 'codex' && typeof entry.file === 'string')?.file ??
       stringValue(codex.agents_file);
     lines.push(
-      injected && typeof guidePath === 'string'
-        ? `Codex: guidance ready in ${guidePath}`
-        : 'Codex: configured'
+      injected && typeof guidePath === 'string' ? `Codex: guidance ready in ${guidePath}` : 'Codex: configured'
     );
   }
 
@@ -2344,7 +2364,13 @@ async function buildEnsureApplicationOptions(context: CliContext): Promise<Ensur
     applicationId,
     name: option(context.options, 'name') ?? buildDefaultApplicationName(applicationId),
     description: option(context.options, 'description') ?? null,
-    keywords: [...new Set(optionList(context.options, 'keyword').map((keyword) => keyword.trim()).filter(Boolean))],
+    keywords: [
+      ...new Set(
+        optionList(context.options, 'keyword')
+          .map((keyword) => keyword.trim())
+          .filter(Boolean)
+      )
+    ],
     sourcePath: source ? await resolveCloneSourceInput(context.root, source, '--source') : null
   };
 }
@@ -2412,28 +2438,40 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
     [
       'claim',
       async () => {
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         return context.service.claim(buildClaimOptions(context, sessionId));
       }
     ],
     [
       'heartbeat',
       async () => {
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         return context.service.heartbeat(buildHeartbeatOptions(context, sessionId));
       }
     ],
     [
       'release',
       async () => {
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         return context.service.release(buildReleaseOptions(context, sessionId));
       }
     ],
     [
       'delegate',
       async () => {
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         return context.service.delegate(buildDelegateOptions(context, sessionId));
       }
     ],
@@ -2449,11 +2487,18 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       async () => {
         const payload = await readJsonStdin();
         const sessionOptions: SessionStartOptions = {
-          sessionId: option(context.options, 'session') ?? (typeof payload.session_id === 'string' ? payload.session_id : undefined),
+          sessionId:
+            option(context.options, 'session') ??
+            (typeof payload.session_id === 'string' ? payload.session_id : undefined),
           runtime: option(context.options, 'runtime') ?? process.env.DOCKO_RUNTIME ?? 'portable',
-          actorMode: parseEnum(option(context.options, 'actor-mode') ?? 'interactive', ['interactive', 'delegated', 'automation'] as const, 'actor-mode'),
+          actorMode: parseEnum(
+            option(context.options, 'actor-mode') ?? 'interactive',
+            ['interactive', 'delegated', 'automation'] as const,
+            'actor-mode'
+          ),
           parentSessionId:
-            option(context.options, 'parent-session') ?? (typeof payload.parent_session_id === 'string' ? payload.parent_session_id : null),
+            option(context.options, 'parent-session') ??
+            (typeof payload.parent_session_id === 'string' ? payload.parent_session_id : null),
           delegatedFromSessionId:
             option(context.options, 'delegated-from-session') ??
             (typeof payload.delegated_from_session_id === 'string' ? payload.delegated_from_session_id : null),
@@ -2493,7 +2538,10 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
     [
       'session current',
       async () => {
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         const session = await context.service.sessionCurrent(sessionId);
         if (context.options['id-only']) {
           process.stdout.write(session.session_id);
@@ -2521,7 +2569,9 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
         process.env.DOCKO_RUNTIME = 'claude-code';
         const payload = await readJsonStdin();
         const session = await context.service.sessionStart({
-          sessionId: option(context.options, 'session') ?? (typeof payload.session_id === 'string' ? payload.session_id : undefined),
+          sessionId:
+            option(context.options, 'session') ??
+            (typeof payload.session_id === 'string' ? payload.session_id : undefined),
           runtime: 'claude-code',
           actorMode: 'interactive',
           workspaceRoot: context.root,
@@ -2560,7 +2610,10 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'adapter claude-code pre-tool-use',
       async () => {
         const payload = await readJsonStdin();
-        const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+        const sessionId = await context.service.resolveSessionId(
+          option(context.options, 'session'),
+          context.sessionEnv
+        );
         const filePath = extractHookFilePath(payload);
         if (!filePath) {
           return { allow: true, reason: 'no-file-path' };
@@ -2580,7 +2633,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
           context.sessionEnv;
 
         if (!parentSessionId) {
-    throw new DockoError('Missing parent session for Claude subagent.', 'USAGE_ERROR', 1);
+          throw new DockoError('Missing parent session for Claude subagent.', 'USAGE_ERROR', 1);
         }
 
         const childSession = await context.service.sessionStart({
@@ -2636,7 +2689,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const handlers = await buildHandlers(context);
     const handler = handlers.get(key);
     if (!handler) {
-    throw new DockoError(`Unknown command: ${context.command.join(' ')}`, 'USAGE_ERROR', 1);
+      throw new DockoError(`Unknown command: ${context.command.join(' ')}`, 'USAGE_ERROR', 1);
     }
 
     const result = await handler();
@@ -2756,8 +2809,8 @@ export const __test__ = {
   serializeAuthorization
 };
 
-const isDirectExecution = Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const isDirectExecution =
+  Boolean(process.argv[1]) && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (isDirectExecution) {
   void main();

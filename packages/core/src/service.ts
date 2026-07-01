@@ -214,7 +214,12 @@ export class DockoService {
       'resource.ensure',
       () =>
         this.mutateRegistry(async (registry) => {
-          const resource = await this.ensureKnownResource(registry, options.resourceType, options.resourceId, options.path);
+          const resource = await this.ensureKnownResource(
+            registry,
+            options.resourceType,
+            options.resourceId,
+            options.path
+          );
           return resource;
         }),
       (resource) => ({
@@ -613,9 +618,7 @@ export class DockoService {
     childSessionId: string,
     scope: 'read' | 'write'
   ): void {
-    const existing = (resource.delegations ?? []).find(
-      (delegation) => delegation.child_session_id === childSessionId
-    );
+    const existing = (resource.delegations ?? []).find((delegation) => delegation.child_session_id === childSessionId);
 
     if (existing) {
       existing.scope = scope;

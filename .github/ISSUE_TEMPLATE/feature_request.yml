@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an idea or improvement for docko
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. docko intentionally keeps the
+        protocol small, so please explain the underlying problem before the
+        solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: >
+        What problem are you trying to solve? What is the use case, and why do
+        the current commands or protocol fall short?
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior or change you would like to see.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Other approaches, workarounds, or existing commands you tried, and why
+        they did not fit.
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any other context, examples, or references.
+    validations:
+      required: false
