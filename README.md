@@ -2,7 +2,10 @@
 
 > Workspace-first slot coordination for AI coding agents.
 
+[![CI](https://github.com/4riel/docko/actions/workflows/ci.yml/badge.svg)](https://github.com/4riel/docko/actions/workflows/ci.yml)
 [![npm alpha](https://img.shields.io/npm/v/docko-workspace/alpha?label=npm%20alpha)](https://www.npmjs.com/package/docko-workspace)
+[![node >=22](https://img.shields.io/node/v/docko-workspace/alpha)](https://nodejs.org)
+[![license MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![source repo](https://img.shields.io/badge/source-4riel%2Fdocko-24292f)](https://github.com/4riel/docko)
 
 ## What is docko?

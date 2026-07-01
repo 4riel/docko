@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/4riel/docko/blob/main/docs/INDEX.md
+    about: Read the docs for questions about setup, the protocol, the CLI, and the Claude Code adapter before opening an issue.

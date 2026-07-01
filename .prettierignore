@@ -1,0 +1,8 @@
+node_modules
+**/dist
+coverage
+.nyc_output
+.publish
+pnpm-lock.yaml
+packages/adapters/claude-code/templates
+**/*.md
