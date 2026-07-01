@@ -135,7 +135,11 @@ test('Installed Claude settings commands run real session and write-authorizatio
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
   await installClaudeCodeAdapter({ workspaceRoot: root, writeSettingsLocal: true });
-  const dockoBinCommand = `node ${JSON.stringify(path.join(repoRoot, 'bin', 'docko.js'))}`;
+  // The hook launcher only opts into a shell on Windows. On POSIX (shell: false) DOCKO_BIN must be
+  // a single spawnable executable, so point it straight at the shebang'd, build-chmodded bin; on
+  // Windows a multi-token `node "<path>"` works because the shell re-parses it.
+  const dockoScript = path.join(repoRoot, 'bin', 'docko.js');
+  const dockoBinCommand = process.platform === 'win32' ? `node ${JSON.stringify(dockoScript)}` : dockoScript;
 
   const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
   const sessionStartCommand = settings.hooks.SessionStart[0].hooks[0].command;
