@@ -594,9 +594,19 @@ test('CLI adapter session-end releases claims and subagent-start requires a pare
   assert.match(missingParent.stderr, /Missing parent session for Claude subagent/);
 });
 
-test('CLI internals cover helper branches around parsing, path formatting, and scaffolding', async () => {
+test('CLI internals cover helper branches around parsing, path formatting, and scaffolding', async (t) => {
   const cli = await loadCliInternals();
   const root = await makeRoot('docko-cli-internals-');
+  // toDisplayPath renders paths relative to cwd and only falls back to an absolute path across
+  // filesystem roots. On Windows CI the temp dir (C:) and the checkout cwd (D:) live on different
+  // drives, which flips those relative-path expectations. Anchor cwd to a child of the temp root so
+  // root-based paths render as predictable `../` relatives on the same drive everywhere; restored
+  // after the test regardless of outcome.
+  const originalCwd = process.cwd();
+  const cwdAnchor = path.join(root, '__cwd__');
+  await mkdir(cwdAnchor, { recursive: true });
+  process.chdir(cwdAnchor);
+  t.after(() => process.chdir(originalCwd));
   const plainDir = path.join(root, 'plain');
   const emptyDir = path.join(root, 'empty');
   const workspaceDir = path.join(root, 'workspace-like');
