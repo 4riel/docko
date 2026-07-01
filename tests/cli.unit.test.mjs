@@ -630,7 +630,13 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
   assert.equal(cli.extractHookFilePath({ tool_input: { nope: true } }), null);
   assert.equal(cli.toDisplayPath(process.cwd()), '.');
   assert.match(cli.toDisplayPath(path.join(path.dirname(process.cwd()), 'sibling')), /^\.\.\//);
-  assert.equal(cli.toDisplayPath('D:\\docko-test'), 'D:\\docko-test');
+  if (process.platform === 'win32') {
+    // A path on a different drive from cwd cannot be relativized, so it is returned as-is.
+    // Pick a drive letter that is not the cwd drive so this holds regardless of the runner disk.
+    const cwdDrive = path.parse(process.cwd()).root.slice(0, 1).toUpperCase();
+    const foreignPath = `${cwdDrive === 'D' ? 'Q' : 'D'}:\\docko-test`;
+    assert.equal(cli.toDisplayPath(foreignPath), foreignPath);
+  }
   assert.deepEqual(cli.buildPathExamples([path.join(root, 'CLAUDE.md'), path.join(root, 'CLAUDE.md')]), [
     cli.toDisplayPath(path.join(root, 'CLAUDE.md'))
   ]);
