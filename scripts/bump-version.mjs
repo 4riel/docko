@@ -3,7 +3,7 @@
 // bundled `docko-workspace` package, so all member versions must move together.
 //
 // Usage: node scripts/bump-version.mjs <version>
-//   e.g. node scripts/bump-version.mjs 0.1.0-alpha.14
+//   e.g. node scripts/bump-version.mjs 0.1.0-alpha.15
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';

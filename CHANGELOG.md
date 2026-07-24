@@ -6,6 +6,28 @@ All notable changes to `docko-workspace` are documented here. The format is base
 
 ## [Unreleased]
 
+## [0.1.0-alpha.15]
+
+### Added
+
+- Tracked the generated Claude Code commands, skill, snippets, settings fragment, and repo-local
+  plugin bundle so this repository exercises the same integration assets it ships to adopters.
+
+### Changed
+
+- Reorganized repository guidance and documentation around the public `docko status`, round-robin
+  `slot acquire`, busy-slot cloning, and explicit session-resolution workflow.
+- Updated `actions/setup-node` to v7 and refreshed the compatible development toolchain, including
+  c8 12, ESLint 10.7, Prettier 3.9.6, and typescript-eslint 8.65 while retaining TypeScript 6.0.
+- Updated Codex hook documentation to match current OpenAI guidance without presenting Codex as a
+  first-class Docko adapter.
+
+### Fixed
+
+- Scoped generated workspace directories out of linting and configured the TypeScript ESLint
+  project root explicitly.
+- Preserved executable permissions on the packaged CLI launcher.
+
 ## [0.1.0-alpha.14]
 
 ### Added
@@ -38,6 +60,7 @@ All notable changes to `docko-workspace` are documented here. The format is base
 - The Claude adapter now stamps `plugin.json` with the live package version on every install
   instead of copying a hardcoded literal, and its hook launcher only opts into a shell on Windows.
 
-[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.14...HEAD
+[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.15...HEAD
+[0.1.0-alpha.15]: https://github.com/4riel/docko/compare/v0.1.0-alpha.14...v0.1.0-alpha.15
 [0.1.0-alpha.14]: https://github.com/4riel/docko/compare/v0.1.0-alpha.13...v0.1.0-alpha.14
 [0.1.0-alpha.13]: https://github.com/4riel/docko/releases/tag/v0.1.0-alpha.13
