@@ -144,7 +144,7 @@ test('slot duplicate copies an existing slot into a new managed slot', async () 
   );
 });
 
-test('slot acquire claims the first free managed slot for the active session', async () => {
+test('slot acquire claims an available managed slot for the active session', async () => {
   const root = await makeWorkspace('docko-acquire-free-');
   await runCli(['init', '--root', root]);
   await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);

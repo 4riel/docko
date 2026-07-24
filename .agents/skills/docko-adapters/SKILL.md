@@ -20,7 +20,7 @@ description: Runtime adapter guidance for the docko repository. Use when working
 - Be explicit about what is implemented versus what is only documented or planned.
 - Claude Code is the only first-class Docko adapter today.
 - Codex guidance is currently manual and docs-driven. Do not imply a shipped Codex adapter unless this repo gains a package, templates, and tests for it.
-- OpenAI currently documents Codex hooks as experimental and temporarily disabled on Windows. Do not present Codex hooks as the default Docko path.
+- OpenAI documents Codex hooks, including Windows-specific command and managed-directory fields. Do not present hooks as Docko's default Codex path until this repo ships and tests a dedicated Codex adapter.
 
 ## Change rules
 

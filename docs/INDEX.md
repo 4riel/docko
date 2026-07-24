@@ -45,6 +45,9 @@
 
 ## Project Docs
 
+- [`../CHANGELOG.md`](../CHANGELOG.md): published release history
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md): repository-wide contribution workflow and community expectations
+- [`../SECURITY.md`](../SECURITY.md): private vulnerability reporting and supported-version policy
 - [`docs-sync.md`](docs-sync.md): docs-sync rules and drift prevention
 - [`contributing.md`](contributing.md): local setup and verification commands
 - [`troubleshooting.md`](troubleshooting.md): common setup and runtime issues

@@ -35,7 +35,7 @@ Codex guidance in this repo is currently manual and docs-driven, not adapter-dri
 What is true today:
 
 - OpenAI documents `AGENTS.md`, project skills, and explicit subagent workflows for Codex.
-- OpenAI also documents hooks for Codex, but marks them experimental and currently disabled on Windows.
+- OpenAI also documents hooks for Codex, including Windows-specific command and managed-directory fields.
 - `docko` does not currently ship `packages/adapters/codex`, Codex installer templates, or Codex adapter tests.
 
 So the supported Docko story for Codex today is:

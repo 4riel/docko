@@ -24,10 +24,10 @@ Rules:
 - Work from the root. Do code work inside `slots/*`.
 - Read the `applications` section from `docko status --root . --brief` when the workspace has multiple app pools.
 - If docko reports `AMBIGUOUS_SESSION`, retry with an explicit `--session <id>` from `docko session list --root . --brief`; do not end existing sessions unless the user asked for cleanup.
-- If no free slot exists, stop and report the conflict.
+- If every slot is busy and the user approves a fresh managed clone, retry `slot acquire` with `--clone-when-busy`; otherwise report the conflict.
 - If `docko` is not runnable, try `DOCKO_BIN`. If it still fails, stop and tell the user.
 - Do not inspect slots one by one or use `docko/registry.json` as a normal fallback.
 - Do not assume Codex subagents inherit Docko slot authority automatically. This repo does not ship a first-class Codex adapter.
 ```
 
-OpenAI's Codex docs currently document `AGENTS.md`, repo skills, and explicit subagent workflows. They also document hooks as experimental and currently disabled on Windows. That is why this example stays instruction-first instead of prescribing a hook-based Docko integration for Codex.
+OpenAI's Codex docs currently document `AGENTS.md`, repo skills, explicit subagent workflows, and hooks. This example stays instruction-first because Docko does not yet ship a Codex adapter package, templates, or tests.

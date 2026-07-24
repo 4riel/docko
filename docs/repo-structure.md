@@ -4,6 +4,8 @@
 docko/
 |-- AGENTS.md
 |-- CLAUDE.md
+|-- .github/
+|-- .husky/
 |-- .agents/
 |   `-- skills/
 |-- docs/
@@ -16,6 +18,9 @@ docko/
 |-- tests/
 |-- examples/
 |-- bin/
+|-- CHANGELOG.md
+|-- CONTRIBUTING.md
+|-- SECURITY.md
 |-- package.json
 `-- pnpm-workspace.yaml
 ```
@@ -24,6 +29,8 @@ docko/
 
 - `AGENTS.md`: repo-root operating rules for Codex and other agents working in this repository
 - `CLAUDE.md`: repo-root operating rules for Claude Code working in this repository
+- `.github/`: CI, security scanning, issue templates, ownership, and pull request defaults
+- `.husky/`: lightweight commit and pre-commit hooks
 - `.agents/skills/`: repo-local skills for repo navigation, protocol work, adapters, and docs sync
 - `docs/`: product framing, protocol reference, architecture, CLI reference, adapter docs, and contributor guidance
 - `packages/core/`: runtime-agnostic protocol semantics, registry persistence, session manifests, stale cleanup, delegation, authorization, and mirror/log services
@@ -33,6 +40,8 @@ docko/
 - `tests/`: unit coverage for core modules plus end-to-end CLI and adapter behavior
 - `examples/`: example layouts and integration material
 - `bin/`: published entrypoint wrapper
+- `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`: release history and repository-wide contributor/security policies
+- `eslint.config.js`, `.prettierrc.json`, and `commitlint.config.js`: automated code and commit hygiene
 
 ## Why The Layout Is Split This Way
 

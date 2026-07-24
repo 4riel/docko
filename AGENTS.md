@@ -76,7 +76,7 @@ examples/                       Copy-pastable examples for adopters
 ## Technical Context
 
 - Node >= 22, pnpm 10+, ES modules (`"type": "module"`)
-- TypeScript 5.9+, target ES2022, module NodeNext, strict mode
+- TypeScript 6.0+, target ES2022, module NodeNext, strict mode
 - No external CLI library; custom `--option value` parser with repeatable flags
 - Environment fallbacks: `DOCKO_ROOT`, `DOCKO_SESSION_ID`, `DOCKO_RUNTIME`, `DOCKO_BIN`
 - CLI output: success JSON on stdout, error JSON on stderr with non-zero exit
@@ -146,23 +146,36 @@ Key error codes: `USAGE_ERROR`, `INVALID_ID`, `NO_ACTIVE_SESSION`, `AMBIGUOUS_SE
 - Prefer the OpenAI Docs MCP server when it is available.
 - If browsing is required, restrict sources to `developers.openai.com` or `platform.openai.com`.
 - Codex officially supports `AGENTS.md`, skills, and explicit subagent workflows.
-- Codex hooks are documented by OpenAI as experimental and, as of April 2, 2026, temporarily disabled on Windows.
+- Codex hooks are documented by OpenAI, including Windows-specific command and managed-directory fields.
 - This repo does not ship a Docko Codex adapter package, templates, or tests. Treat Codex support here as instruction-driven `docko` CLI usage, not a first-class adapter.
 
 <!-- docko:begin:codex -->
 ## docko Working Default
 
-- Work from the workspace root.
-- Treat the root as the source of truth for planning, docs, and coordination.
-- Start by running `docko status --root .`.
-- Do code work inside `slots/*`.
-- Use `docko slot acquire --root . --session <id> --branch <branch> --task "<task>"` before writing in a managed slot.
-- If the workspace defines applications such as `backend` or `frontend`, mention that in the task text or pass `--application <id>` explicitly.
-- Reuse `DOCKO_SESSION_ID` when a runtime already set it. Otherwise choose a unique session ID for the run instead of reusing a shared literal like `codex`.
-- Release the slot when finished.
-- Do not treat `docko/registry.json` as a normal fallback for slot selection.
-- Prefer the smallest correct change and reuse existing repo commands, scripts, and patterns.
+This repo uses `docko` for writable workspace coordination.
+
+Quick path:
+
+1. Work from the workspace root.
+2. Run `docko status --root . --brief` once.
+3. Use `docko slot acquire --root . --session <session-id> --branch <branch> --task "<task>" --brief` before writing.
+4. If the workspace defines applications such as `backend` or `frontend`, pass `--application <id>` explicitly.
+5. Example:
+   `docko slot acquire --root . --session <session-id> --application backend --branch <branch> --task "update backend auth" --brief`
+6. If docko asks whether it should create a fresh managed clone because all slots are busy, answer explicitly.
+7. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko.
+8. Release it when done:
+   `docko release --root . --session <session-id> --resource slot --id <slot>`
+
+Rules:
+
+- Work from the root. Do code work inside `slots/*`.
+- Reuse `DOCKO_SESSION_ID` when a runtime already set it. Otherwise choose a unique session ID for the run.
+- Read the `applications` section from `docko status --root . --brief` when the workspace has multiple app pools.
+- If docko reports `AMBIGUOUS_SESSION`, retry with an explicit `--session <id>` from `docko session list --root . --brief`; do not end existing sessions unless the user asked for cleanup.
+- If every slot is busy and the user already approved the fallback, add `--clone-when-busy` to `docko slot acquire`.
+- If `docko` is not on PATH, try `DOCKO_BIN`. If it still is not runnable, stop and tell the user.
+- Do not inspect slots one by one or use `docko/registry.json` as a normal fallback.
 - Delegated Claude teammates inherit parent slot authority when the parent already owns the slot.
-- Do not assume Codex subagents get automatic Docko session inheritance. This repo has no first-class Codex adapter yet.
-- If every slot is busy and docko offers to create a fresh managed clone, answer explicitly based on the user's instructions. Escalate only when the current session still does not have write authority.
+- Do not assume Codex subagents inherit Docko session or slot authority automatically. Docko does not ship a Codex adapter yet.
 <!-- docko:end:codex -->

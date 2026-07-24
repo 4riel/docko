@@ -1,0 +1,53 @@
+{
+  "description": "docko Claude Code hooks for slot claims, teammate inheritance, and session cleanup",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

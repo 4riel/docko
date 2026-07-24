@@ -73,7 +73,7 @@ That is the intended experience. The user should not have to micromanage slot bo
 The fast-path behavior Claude should follow is:
 
 1. Run `/dock-status` or `docko status --root . --brief`.
-2. Use `docko slot acquire --root . --branch <branch> --task "<task>" --brief` when you want docko to choose the first free slot for you.
+2. Use `docko slot acquire --root . --branch <branch> --task "<task>" --brief` when you want docko to choose the next available slot using round-robin selection.
 3. If every slot is busy and docko asks whether to create a fresh managed clone, answer explicitly.
 4. Use `/dock-claim` or `docko claim --root . --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot you want.
 5. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko's hook checks.
@@ -190,14 +190,14 @@ OpenAI's Codex docs currently say Codex supports:
 - `AGENTS.md` instruction files
 - project and personal skills
 - explicit subagent workflows
-- hooks, but only as an experimental feature and with Windows support temporarily disabled
+- hooks, including Windows-specific command and managed-directory fields
 
 This repo does not currently ship a Docko Codex adapter package, Codex templates, or Codex adapter tests. So the accurate guidance is:
 
 - Claude Code is the only first-class Docko adapter today.
 - Codex can still use Docko through `AGENTS.md`, repo skills, and manual `docko` CLI calls.
 - Do not describe Codex as having the same installed enforcement path as Claude Code.
-- Do not recommend Codex hooks as the default Docko path, especially on Windows.
+- Do not recommend Codex hooks as the default Docko path until this repo ships and tests a dedicated Codex adapter.
 
 ## Notes
 
