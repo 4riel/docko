@@ -29,7 +29,7 @@ Package-install coverage runs from fresh temp directories outside the monorepo s
 
 - bootstrap from an empty workspace
 - one active session can claim a free slot
-- `slot acquire` claims the first free slot and can duplicate a new managed slot when all current slots are busy
+- `slot acquire` rotates through available slots using its round-robin cursor and can duplicate a new managed slot when all current slots are busy
 - many active sessions can claim different slots
 - explicit `--session` resolves ambiguity correctly
 - ambiguous session resolution fails with a clear error

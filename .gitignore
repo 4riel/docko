@@ -24,7 +24,9 @@ playwright-report/
 !.env.example
 !.env.test.example
 .npmrc
-docko/
+/docko/
+/slots/
+/.claude/settings.local.json
 workspace/
 
 # Local launch/operator bundles

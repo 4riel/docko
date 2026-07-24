@@ -105,7 +105,7 @@ docko status --root ./workspace
 docko slot acquire --root ./workspace --session leader --branch feat/task --task "start work"
 ```
 
-`slot acquire` is the quickest way to start real work after onboarding. It claims the first free managed slot. If none are free, it can ask whether to duplicate an existing slot, or you can opt into that programmatically with `--clone-when-busy`. Use explicit `--application <id>` when the workspace has multiple app pools, and add `--brief` when an agent only needs the selected slot and availability summary.
+`slot acquire` is the quickest way to start real work after onboarding. It claims the next available managed slot using the workspace's round-robin cursor. If none are free, it can ask whether to duplicate an existing slot, or you can opt into that programmatically with `--clone-when-busy`. Use explicit `--application <id>` when the workspace has multiple app pools, and add `--brief` when an agent only needs the selected slot and availability summary.
 
 The starter layout looks like this:
 

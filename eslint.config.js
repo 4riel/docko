@@ -11,6 +11,9 @@ export default tseslint.config(
       'coverage/**',
       '.nyc_output/**',
       '.publish/**',
+      'docko/**',
+      'slots/**',
+      'workspace/**',
       'packages/adapters/claude-code/templates/**'
     ]
   },
@@ -20,6 +23,9 @@ export default tseslint.config(
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname
+      },
       globals: {
         ...globals.node
       }
