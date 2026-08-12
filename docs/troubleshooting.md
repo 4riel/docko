@@ -40,6 +40,24 @@ Common causes:
 - `session start --actor-mode delegated` named a missing parent
 - a Claude hook is carrying a stale `DOCKO_SESSION_ID`
 
+### `session list` Keeps Growing
+
+Sessions are only marked ended by `session end`, so crashed or abandoned runtimes used to stay active forever.
+The janitor now ends sessions that stay quiet past `workspace.config.janitor.session_stale_after_ms` (default 24 hours) on every registry mutation.
+
+To clear an existing backlog now:
+
+```text
+docko session prune --root ./workspace --dry-run
+docko session prune --root ./workspace
+```
+
+Notes:
+
+- start with `--dry-run`; it reports the same set without writing anything
+- `--max-age-ms <n>` prunes more aggressively for one run, for example `--max-age-ms 3600000` for an hour
+- sessions that still own or are delegated a live claim are never ended, so an active teammate is safe
+
 ### `SESSION_ID_CONFLICT`
 
 You tried to start a new session with an ID that is already active.

@@ -15,7 +15,7 @@ CLI command: `docko`
 - Root resolution walks up like git: when the starting point (cwd or an implicit `DOCKO_ROOT`) sits inside a workspace but below its root, docko resolves up to the nearest ancestor that owns `docko/registry.json` instead of fragmenting state into a slot. `init` is exempt — it always scaffolds at the given location.
 - An explicit `--root` that points inside a managed `slots/` directory is refused with the `ROOT_INSIDE_SLOT` error rather than leaking a registry into the slot; run against the workspace root instead.
 - Session-aware commands also accept `--session <id>`. If omitted, docko tries `DOCKO_SESSION_ID`, then auto-resolution from active sessions.
-- Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, and `session list`.
+- Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, `session list`, and `session prune`.
 - `docko --help` and `docko --version` print plain text.
 - Success payloads are JSON on stdout.
 - Fatal errors are JSON on stderr with a non-zero exit code.
@@ -58,6 +58,7 @@ Useful options:
 - `--mode auto|workspace|repo`: choose scaffolding mode. `auto` is the default.
 - `--slot <id>`: create starter slot directories. Repeatable. Duplicate values are de-duplicated.
 - `--slot-stale-after-ms <n>`: store the default slot stale timeout in `workspace.config.janitor.slot_stale_after_ms`.
+- `--session-stale-after-ms <n>`: store the session stale timeout in `workspace.config.janitor.session_stale_after_ms`. Workspaces without it use `86400000`.
 - `--claude`: install Claude Code assets during init.
 - `--codex`: prepare Codex onboarding guidance during init.
 - `--inject-claude`: inject the managed docko block into `CLAUDE.md`.
@@ -358,6 +359,27 @@ Notes:
 
 - Ended sessions are excluded.
 - `--brief` returns `active_session_count` plus compact active session rows for recovery from `AMBIGUOUS_SESSION`.
+
+## `docko session prune`
+
+Ends sessions that have gone quiet for longer than the session stale window.
+
+```text
+docko session prune --root ./workspace --dry-run
+docko session prune --root ./workspace
+docko session prune --root ./workspace --max-age-ms 3600000 --brief
+```
+
+Options:
+
+- `--max-age-ms <n>` overrides `workspace.config.janitor.session_stale_after_ms` for this run only.
+- `--dry-run` reports what would be ended without writing anything.
+
+Notes:
+
+- The janitor already runs this sweep on every registry mutation, including `docko status`. Use this command to clear an existing backlog immediately or to preview one.
+- A session that still owns, or is delegated, a live claim is never ended.
+- Ended sessions keep their manifest files; `docko session list` stops reporting them.
 
 ## `docko adapter claude-code install`
 

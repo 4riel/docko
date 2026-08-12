@@ -61,6 +61,11 @@
                   "type": "integer",
                   "minimum": 1,
                   "description": "Default stale timeout in milliseconds for future slot claims."
+                },
+                "session_stale_after_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Quiet time in milliseconds after which the janitor ends an active session."
                 }
               },
               "additionalProperties": true

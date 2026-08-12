@@ -60,6 +60,7 @@ The workspace descriptor lives inside `registry.json` and identifies the managed
 - `workspace_root`: absolute path to the managed workspace root
 - `name`: human-facing label
 - `config.janitor.slot_stale_after_ms`: optional default stale timeout for future slot claims
+- `config.janitor.session_stale_after_ms`: optional quiet time after which the janitor ends an active session
 - `config.scheduler.last_slot_id`: round-robin cursor for `slot acquire`, keyed by application id (or a default key for flat slot pools). Each entry records the last slot id claimed so the next acquire starts after it, leaving the just-released slot last in the ring
 
 ### Session Manifest
@@ -110,7 +111,8 @@ The registry tracks workspace-level state only. It does not inline session manif
     "name": "workspace",
     "config": {
       "janitor": {
-        "slot_stale_after_ms": 14400000
+        "slot_stale_after_ms": 14400000,
+        "session_stale_after_ms": 86400000
       },
       "scheduler": {
         "last_slot_id": {
@@ -259,6 +261,17 @@ Rules:
 - if the manifest file exists, it marks the manifest with `ended_at` and updates `updated_at`
 - it does not remove the manifest file by default
 
+### Prune
+
+`docko session prune` is the recovery path for sessions that never ran `session end`.
+
+Rules:
+
+- it applies the same session janitor pass described in [Stale Recovery](#stale-recovery)
+- `--max-age-ms <n>` overrides the workspace session stale window for that run only
+- `--dry-run` reports the sessions that would be ended and writes nothing
+- it does not cascade to delegated children; each session is judged on its own quiet time
+
 ## Claim Lifecycle
 
 ### Claim
@@ -384,6 +397,25 @@ When a claim is stale:
 - `docko status` reports the released snapshots under `janitor.released_claims`
 - the debug log records a `stale-recovery` entry
 
+### Stale Sessions
+
+The same janitor pass also ends sessions that stopped reporting activity, so a crashed or abandoned
+runtime does not stay active forever.
+
+Threshold:
+
+- `workspace.config.janitor.session_stale_after_ms`, otherwise `86400000`
+
+Rules:
+
+- only sessions without `ended_at` are considered, using `updated_at` as the activity source
+- invalid timestamps are treated as stale
+- sessions are evaluated after claim recovery, so a claim released in the same pass no longer protects its owner
+- a session that still owns, or is delegated, a claim that survived the pass is never ended
+- ending a stale session marks the manifest exactly like `session end` does; the file is not removed
+- `docko status` reports the ended manifests under `janitor.ended_sessions`
+- the debug log records a `stale-session-recovery` entry
+
 ## File-Write Authorization
 
 The core write-authorization check is intentionally narrow.
@@ -450,6 +482,7 @@ docko session start --root <path> --runtime <name> [--session <id>] [--parent-se
 docko session end --root <path> [--session <id>]
 docko session current --root <path> [--session <id>] [--id-only]
 docko session list --root <path> [--brief]
+docko session prune --root <path> [--max-age-ms <n>] [--dry-run] [--brief]
 ```
 
 Runtime-specific adapter commands exist under adapter namespaces and may automate these flows, but they must preserve the same claim, ownership, and stale-recovery semantics.

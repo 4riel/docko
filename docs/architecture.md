@@ -231,7 +231,7 @@ Several choices are intentionally runtime-neutral:
 The architecture assumes local failures happen and optimizes for cheap recovery:
 
 - if a session exits normally, `session end` releases owned claims
-- if a session crashes, claims remain until stale recovery clears them
+- if a session crashes, claims remain until stale recovery clears them, and the session itself is ended once it stays quiet past the session stale window
 - if a registry file is unreadable, the core fails fast with `CORRUPTED_REGISTRY`
 - if logging fails, the operation still succeeds
 - if concurrent mutation happens, the lock gate forces serialization or times out cleanly
