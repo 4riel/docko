@@ -1221,6 +1221,167 @@ test('fresh session activity prevents janitor cleanup even when claim timestamps
   assert.deepEqual(status.janitor.released_claims, []);
 });
 
+async function ageSessionManifest(root, sessionId, updatedAt = '2026-01-01T00:00:00.000Z') {
+  const sessionPath = path.join(root, 'docko', 'sessions', `${sessionId}.json`);
+  const session = JSON.parse(await readFile(sessionPath, 'utf8'));
+  session.updated_at = updatedAt;
+  await writeFile(sessionPath, JSON.stringify(session, null, 2), 'utf8');
+}
+
+test('session prune previews quiet sessions before ending them', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ghost']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+  await ageSessionManifest(root, 'ghost');
+
+  const preview = parseStdout(await runCli(['session', 'prune', '--root', root, '--dry-run']));
+  assert.equal(preview.dry_run, true);
+  assert.equal(preview.max_age_ms, 24 * 60 * 60 * 1000);
+  assert.deepEqual(
+    preview.pruned_sessions.map((session) => session.session_id),
+    ['ghost']
+  );
+
+  const untouched = parseStdout(await runCli(['session', 'list', '--root', root]));
+  assert.deepEqual(untouched.active_sessions.map((session) => session.session_id).sort(), ['ghost', 'worker']);
+
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root]));
+  assert.equal(pruned.dry_run, false);
+  assert.equal(pruned.pruned_session_count, 1);
+  assert.equal(pruned.pruned_sessions[0].session_id, 'ghost');
+  assert.notEqual(pruned.pruned_sessions[0].ended_at, null);
+
+  const remaining = parseStdout(await runCli(['session', 'list', '--root', root]));
+  assert.deepEqual(
+    remaining.active_sessions.map((session) => session.session_id),
+    ['worker']
+  );
+
+  const logs = parseStdout(await runCli(['logs', '--root', root, '--limit', '50']));
+  assert.equal(
+    logs.entries.some((entry) => entry.operation === 'stale-session-recovery' && entry.session_id === 'ghost'),
+    true
+  );
+});
+
+test('session prune honors an explicit max age and reports briefly', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--max-age-ms', '1', '--brief']));
+  assert.deepEqual(pruned, {
+    dry_run: false,
+    max_age_ms: 1,
+    pruned_session_count: 1,
+    pruned_sessions: [
+      {
+        session_id: 'worker',
+        runtime: 'shell',
+        actor_mode: 'interactive',
+        parent_session_id: null,
+        delegated_from_session_id: null,
+        started_at: pruned.pruned_sessions[0].started_at,
+        updated_at: pruned.pruned_sessions[0].updated_at
+      }
+    ]
+  });
+
+  const remaining = parseStdout(await runCli(['session', 'list', '--root', root]));
+  assert.deepEqual(remaining.active_sessions, []);
+});
+
+test('session prune keeps a quiet session that still owns a live claim', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'owner']);
+  await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'owner',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--stale-after-ms',
+    String(24 * 60 * 60 * 1000)
+  ]);
+  // Quiet for an hour, which is inside the claim's stale window: the claim survives and guards its owner.
+  await ageSessionManifest(root, 'owner', new Date(Date.now() - 60 * 60 * 1000).toISOString());
+
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--max-age-ms', '1']));
+  assert.deepEqual(pruned.pruned_sessions, []);
+
+  const status = parseStdout(await runCli(['status', '--root', root, '--resource', 'slot', '--id', 'app-alpha']));
+  assert.equal(status.resources[0].status, 'claimed');
+  assert.equal(status.resources[0].claim.owner_session_id, 'owner');
+});
+
+test('an abandoned session loses its stale claim and is ended in the same janitor pass', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root, '--session-stale-after-ms', '60000']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ghost']);
+  await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'ghost',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--stale-after-ms',
+    '1000'
+  ]);
+  await ageSessionManifest(root, 'ghost');
+
+  const status = parseStdout(await runCli(['status', '--root', root]));
+  assert.deepEqual(
+    status.janitor.released_claims.map((resource) => resource.resource_id),
+    ['app-alpha']
+  );
+  assert.deepEqual(
+    status.janitor.ended_sessions.map((session) => session.session_id),
+    ['ghost']
+  );
+  assert.equal(status.resources.find((resource) => resource.resource_id === 'app-alpha').status, 'free');
+});
+
+test('the janitor ends stale sessions during an ordinary status call', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root, '--session-stale-after-ms', '60000']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ghost']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+  await ageSessionManifest(root, 'ghost');
+
+  const status = parseStdout(await runCli(['status', '--root', root]));
+  assert.deepEqual(
+    status.janitor.ended_sessions.map((session) => session.session_id),
+    ['ghost']
+  );
+
+  const remaining = parseStdout(await runCli(['session', 'list', '--root', root]));
+  assert.deepEqual(
+    remaining.active_sessions.map((session) => session.session_id),
+    ['worker']
+  );
+});
+
+test('init can configure the default session stale timeout', async () => {
+  const root = await makeWorkspace();
+  const init = parseStdout(await runCli(['init', '--root', root, '--session-stale-after-ms', '7200000']));
+  assert.equal(init.workspace_config.janitor.session_stale_after_ms, 7200000);
+
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+  const preview = parseStdout(await runCli(['session', 'prune', '--root', root, '--dry-run']));
+  assert.equal(preview.max_age_ms, 7200000);
+  assert.deepEqual(preview.pruned_sessions, []);
+});
+
 test('init can configure the default slot stale timeout for future claims', async () => {
   const root = await makeWorkspace();
   const init = parseStdout(await runCli(['init', '--root', root, '--slot-stale-after-ms', '14400000']));

@@ -25,9 +25,16 @@ import type {
   RegistryResource,
   ReleaseOptions,
   SessionManifest,
+  SessionPruneOptions,
+  SessionPruneResult,
   SessionStartOptions,
   StatusResult
 } from './types.js';
+
+interface JanitorPassOptions {
+  // Overrides the workspace session stale window for a single janitor pass.
+  sessionStaleAfterMs?: number;
+}
 
 export class DockoService {
   /**
@@ -184,21 +191,60 @@ export class DockoService {
     );
   }
 
+  /**
+   * Ends sessions that have gone quiet, on demand.
+   * The janitor already does this on every registry mutation; this command exists so an
+   * operator can clear a backlog immediately or preview it with dryRun.
+   */
+  async sessionPrune(options: SessionPruneOptions = {}): Promise<SessionPruneResult> {
+    return this.withLoggedOperation(
+      'session.prune',
+      async () => {
+        if (options.dryRun) {
+          return this.previewStaleSessions(options.maxAgeMs);
+        }
+
+        return this.mutateRegistry(
+          async (registry, _releasedStaleClaims, endedStaleSessions) =>
+            this.buildSessionPruneResult(
+              endedStaleSessions,
+              options.maxAgeMs ?? this.staleJanitor.defaultSessionStaleAfter(registry),
+              false
+            ),
+          { sessionStaleAfterMs: options.maxAgeMs }
+        );
+      },
+      (result) => ({
+        dry_run: result.dry_run,
+        max_age_ms: result.max_age_ms,
+        pruned_session_count: result.pruned_session_count
+      }),
+      {
+        details: {
+          max_age_ms: options.maxAgeMs ?? null,
+          dry_run: options.dryRun ?? false
+        }
+      }
+    );
+  }
+
   async status(resourceType?: string, resourceId?: string): Promise<StatusResult> {
     return this.withLoggedOperation(
       'status',
       () =>
-        this.mutateRegistry(async (registry, releasedStaleClaims) => {
+        this.mutateRegistry(async (registry, releasedStaleClaims, endedStaleSessions) => {
           return {
             ...this.registryScribe.buildStatus(registry, resourceType, resourceId),
             janitor: {
-              released_claims: releasedStaleClaims
+              released_claims: releasedStaleClaims,
+              ended_sessions: endedStaleSessions
             }
           };
         }),
       (result) => ({
         resource_count: result.resources.length,
         janitor_released_claims: result.janitor.released_claims.length,
+        janitor_ended_sessions: result.janitor.ended_sessions.length,
         filter_resource_type: resourceType ?? null,
         filter_resource_id: resourceId ?? null
       }),
@@ -489,30 +535,100 @@ export class DockoService {
     return this.mutationGate.run(operation);
   }
 
-  private async loadRegistryForMutation(): Promise<{
+  private async loadRegistryForMutation(options: JanitorPassOptions = {}): Promise<{
     registry: RegistryDocument;
     releasedStaleClaims: RegistryResource[];
+    endedStaleSessions: SessionManifest[];
   }> {
     const registry = await this.registryScribe.ensureRegistry();
     await this.registryScribe.discoverSlotResources(registry);
     const sessions = await this.sessionSherpa.listByFiles();
+    const now = new Date();
     // Stale cleanup happens on the shared mutation path so reads and writes converge on one view.
-    const staleResources = this.staleJanitor.releaseStaleClaims(registry, { sessions });
+    const staleResources = this.staleJanitor.releaseStaleClaims(registry, { now, sessions });
     await Promise.all(staleResources.map((resource) => this.recordStaleRecovery(resource)));
+    // Sessions are swept after claims so a just-recovered claim no longer protects its abandoning session.
+    const endedStaleSessions = await this.endStaleSessions(registry, sessions, now, options.sessionStaleAfterMs);
     return {
       registry,
-      releasedStaleClaims: staleResources
+      releasedStaleClaims: staleResources,
+      endedStaleSessions
     };
   }
 
   private async mutateRegistry<T>(
-    operation: (registry: RegistryDocument, releasedStaleClaims: RegistryResource[]) => Promise<T>
+    operation: (
+      registry: RegistryDocument,
+      releasedStaleClaims: RegistryResource[],
+      endedStaleSessions: SessionManifest[]
+    ) => Promise<T>,
+    options: JanitorPassOptions = {}
   ): Promise<T> {
     return this.withMutationLock(async () => {
-      const { registry, releasedStaleClaims } = await this.loadRegistryForMutation();
-      const result = await operation(registry, releasedStaleClaims);
+      const { registry, releasedStaleClaims, endedStaleSessions } = await this.loadRegistryForMutation(options);
+      const result = await operation(registry, releasedStaleClaims, endedStaleSessions);
       await this.registryScribe.writeRegistry(registry);
       return result;
+    });
+  }
+
+  private async endStaleSessions(
+    registry: RegistryDocument,
+    sessions: SessionManifest[],
+    now: Date,
+    staleAfterMs?: number
+  ): Promise<SessionManifest[]> {
+    const sessionStaleAfterMs = staleAfterMs ?? this.staleJanitor.defaultSessionStaleAfter(registry);
+    const staleSessions = this.staleJanitor.collectStaleSessions(registry, {
+      now,
+      sessions,
+      staleAfterMs: sessionStaleAfterMs
+    });
+
+    const endedSessions: SessionManifest[] = [];
+    for (const session of staleSessions) {
+      const lastActivityAt = session.updated_at;
+      const endedSession = await this.sessionSherpa.end(session.session_id);
+      if (!endedSession) {
+        continue;
+      }
+
+      // Keep the in-memory manifest list aligned with disk for the rest of this pass.
+      session.ended_at = endedSession.ended_at;
+      session.updated_at = endedSession.updated_at;
+      endedSessions.push(endedSession);
+      await this.recordStaleSessionRecovery(endedSession, sessionStaleAfterMs, lastActivityAt);
+    }
+
+    return endedSessions;
+  }
+
+  private buildSessionPruneResult(sessions: SessionManifest[], maxAgeMs: number, dryRun: boolean): SessionPruneResult {
+    return {
+      dry_run: dryRun,
+      max_age_ms: maxAgeMs,
+      pruned_session_count: sessions.length,
+      pruned_sessions: sessions
+    };
+  }
+
+  private async previewStaleSessions(maxAgeMs?: number): Promise<SessionPruneResult> {
+    return this.withMutationLock(async () => {
+      const registry = await this.registryScribe.ensureRegistry();
+      const sessions = await this.sessionSherpa.listByFiles();
+      const now = new Date();
+      // Preview against a copy: claims the janitor would recover must not protect their owners here,
+      // and a dry run may not touch the registry on disk.
+      const preview = structuredClone(registry);
+      this.staleJanitor.releaseStaleClaims(preview, { now, sessions });
+      const staleAfterMs = maxAgeMs ?? this.staleJanitor.defaultSessionStaleAfter(preview);
+      const candidates = this.staleJanitor.collectStaleSessions(preview, {
+        now,
+        sessions,
+        staleAfterMs
+      });
+
+      return this.buildSessionPruneResult(candidates, staleAfterMs, true);
     });
   }
 
@@ -559,11 +675,13 @@ export class DockoService {
   }
 
   private applyInitOptions(registry: RegistryDocument, options: InitOptions): void {
-    if (options.slotStaleAfterMs === undefined) {
-      return;
+    if (options.slotStaleAfterMs !== undefined) {
+      ((registry.workspace.config ??= {}).janitor ??= {}).slot_stale_after_ms = options.slotStaleAfterMs;
     }
 
-    ((registry.workspace.config ??= {}).janitor ??= {}).slot_stale_after_ms = options.slotStaleAfterMs;
+    if (options.sessionStaleAfterMs !== undefined) {
+      ((registry.workspace.config ??= {}).janitor ??= {}).session_stale_after_ms = options.sessionStaleAfterMs;
+    }
   }
 
   private advanceSchedulerCursor(registry: RegistryDocument, key: string, slotId: string): void {
@@ -704,6 +822,29 @@ export class DockoService {
         stale_after_ms: resource.claim?.stale_after_ms ?? null,
         branch: resource.claim?.branch ?? null,
         task: resource.claim?.task ?? null
+      }
+    });
+  }
+
+  private async recordStaleSessionRecovery(
+    session: SessionManifest,
+    staleAfterMs: number,
+    lastActivityAt: string
+  ): Promise<void> {
+    await this.recordLog({
+      operation: 'stale-session-recovery',
+      outcome: 'ok',
+      session_id: session.session_id,
+      resource_type: null,
+      resource_id: null,
+      details: {
+        release_reason: 'stale-session-recovery',
+        stale_after_ms: staleAfterMs,
+        runtime: session.runtime,
+        actor_mode: session.actor_mode,
+        started_at: session.started_at,
+        last_activity_at: lastActivityAt,
+        ended_at: session.ended_at
       }
     });
   }

@@ -21,6 +21,38 @@ async function makeTempDir(prefix = 'docko-core-unit-') {
   return mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+function buildSessionRegistry(config) {
+  return {
+    schema_version: '0.1.0',
+    generated_at: '2026-01-01T00:00:00.000Z',
+    workspace: {
+      workspace_id: 'wk_test',
+      workspace_root: '/workspace',
+      name: 'workspace',
+      config
+    },
+    applications: [],
+    resources: []
+  };
+}
+
+function buildSession(sessionId, overrides = {}) {
+  return {
+    schema_version: '0.1.0',
+    session_id: sessionId,
+    runtime: 'shell',
+    actor_mode: 'interactive',
+    parent_session_id: null,
+    delegated_from_session_id: null,
+    started_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ended_at: null,
+    workspace_root: '/workspace',
+    metadata: {},
+    ...overrides
+  };
+}
+
 test('fs helpers rethrow non-ENOENT listDirectories errors', async () => {
   const root = await makeTempDir();
   const filePath = path.join(root, 'not-a-directory');
@@ -662,6 +694,92 @@ test('StaleJanitor also honors fresh delegated child activity when evaluating st
 
   assert.equal(released.length, 0);
   assert.equal(registry.resources[0].status, 'claimed');
+});
+
+test('StaleJanitor resolves the session stale window from workspace config with a 24 hour fallback', () => {
+  const janitor = new StaleJanitor();
+  assert.equal(janitor.defaultSessionStaleAfter(buildSessionRegistry()), 24 * 60 * 60 * 1000);
+  assert.equal(
+    janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 60000 } })),
+    60000
+  );
+  assert.equal(
+    janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 0 } })),
+    24 * 60 * 60 * 1000
+  );
+  assert.equal(
+    janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 1.5 } })),
+    24 * 60 * 60 * 1000
+  );
+});
+
+test('StaleJanitor collects quiet sessions and skips fresh, ended, and invalid-timestamp cases', () => {
+  const now = new Date('2026-01-01T01:00:00.000Z');
+  const sessions = [
+    buildSession('quiet', { updated_at: '2026-01-01T00:00:00.000Z' }),
+    buildSession('fresh', { updated_at: '2026-01-01T00:59:59.000Z' }),
+    buildSession('already-ended', {
+      updated_at: '2026-01-01T00:00:00.000Z',
+      ended_at: '2026-01-01T00:00:01.000Z'
+    }),
+    buildSession('corrupt', { updated_at: 'not-a-date' })
+  ];
+
+  const stale = new StaleJanitor().collectStaleSessions(buildSessionRegistry(), {
+    now,
+    sessions,
+    staleAfterMs: 60000
+  });
+
+  assert.deepEqual(
+    stale.map((session) => session.session_id),
+    ['quiet', 'corrupt']
+  );
+});
+
+test('StaleJanitor never collects a session that still owns or is delegated a live claim', () => {
+  const now = new Date('2026-01-01T01:00:00.000Z');
+  const registry = buildSessionRegistry();
+  registry.resources = [
+    {
+      resource_type: 'slot',
+      resource_id: 'app-alpha',
+      path: 'slots/app-alpha',
+      status: 'claimed',
+      claim: {
+        owner_session_id: 'owner',
+        runtime: 'shell',
+        branch: null,
+        task: null,
+        claimed_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        heartbeat_at: '2026-01-01T00:00:00.000Z',
+        stale_after_ms: 86400000,
+        release_reason: null
+      },
+      delegations: [
+        {
+          child_session_id: 'child',
+          granted_by_session_id: 'owner',
+          granted_at: '2026-01-01T00:00:00.000Z',
+          scope: 'write'
+        }
+      ]
+    }
+  ];
+
+  const sessions = [
+    buildSession('owner', { updated_at: '2026-01-01T00:00:00.000Z' }),
+    buildSession('child', { updated_at: '2026-01-01T00:00:00.000Z' }),
+    buildSession('idle', { updated_at: '2026-01-01T00:00:00.000Z' })
+  ];
+
+  const stale = new StaleJanitor().collectStaleSessions(registry, { now, sessions, staleAfterMs: 60000 });
+
+  assert.deepEqual(
+    stale.map((session) => session.session_id),
+    ['idle']
+  );
 });
 
 test('MutationGate succeeds and always cleans up its lock directory', async () => {

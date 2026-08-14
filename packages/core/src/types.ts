@@ -5,6 +5,7 @@ export type ResourceType = 'slot' | 'shared-env' | 'custom';
 
 export interface WorkspaceJanitorConfig {
   slot_stale_after_ms?: number;
+  session_stale_after_ms?: number;
 }
 
 export interface WorkspaceSchedulerConfig {
@@ -87,6 +88,7 @@ export interface RegistryDocument {
 
 export interface StatusJanitorResult {
   released_claims: RegistryResource[];
+  ended_sessions: SessionManifest[];
 }
 
 export interface StatusResult {
@@ -99,6 +101,20 @@ export interface StatusResult {
 
 export interface InitOptions {
   slotStaleAfterMs?: number;
+  sessionStaleAfterMs?: number;
+}
+
+export interface SessionPruneOptions {
+  // Overrides the workspace session stale timeout for this run only.
+  maxAgeMs?: number;
+  dryRun?: boolean;
+}
+
+export interface SessionPruneResult {
+  dry_run: boolean;
+  max_age_ms: number;
+  pruned_session_count: number;
+  pruned_sessions: SessionManifest[];
 }
 
 export interface SessionStartOptions {

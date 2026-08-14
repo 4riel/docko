@@ -20,6 +20,7 @@ import {
   type RegistryResource,
   type ReleaseOptions,
   type SessionManifest,
+  type SessionPruneResult,
   type SessionStartOptions,
   type StatusResult,
   type WorkspaceApplication
@@ -274,6 +275,7 @@ Commands:
   session end                       End a session and release its claims
   session current                   Show or resolve the current session
   session list                      List active sessions
+  session prune                     End sessions that have gone quiet
   adapter claude-code install       Install Claude Code adapter assets
   adapter claude-code settings      Print Claude Code settings fragment
   adapter claude-code session-start Start a Claude Code session (hook)
@@ -295,6 +297,7 @@ Init options:
   --mode <mode>       Scaffold mode: auto | workspace | repo (default: auto)
   --slot <id>         Create a starter slot directory. Repeatable.
   --slot-stale-after-ms <n>  Set the default stale timeout for slot claims in this workspace
+  --session-stale-after-ms <n>  Set the default stale timeout for sessions in this workspace
   --claude            Install Claude Code adapter assets during init
   --codex             Prepare Codex onboarding during init
   --json              Force JSON output for init, even in interactive mode
@@ -321,6 +324,10 @@ Slot acquire options:
   --clone-when-busy   Duplicate and claim a fresh managed slot when none are free
   --clone-from <p>    Source slot or path for the busy-slot clone fallback
   --clone-slot <id>   Preferred slot id for the busy-slot clone fallback
+
+Session prune options:
+  --max-age-ms <n>    Quiet time after which a session is ended (default: workspace session stale timeout)
+  --dry-run           Report the sessions that would be ended without changing anything
 `;
   process.stdout.write(help);
 }
@@ -1468,7 +1475,8 @@ function compactStatus(status: StatusResult): Record<string, unknown> {
     applications: applicationSummaries,
     resources: resources.map(compactResource),
     janitor_released: status.janitor.released_claims.length,
-    released_claims: status.janitor.released_claims.map(compactResource)
+    released_claims: status.janitor.released_claims.map(compactResource),
+    janitor_ended_sessions: status.janitor.ended_sessions.length
   };
 }
 
@@ -1511,6 +1519,15 @@ function compactSessionList(result: { active_sessions: SessionManifest[] }): Rec
   return {
     active_session_count: result.active_sessions.length,
     active_sessions: result.active_sessions.map(compactSession)
+  };
+}
+
+function compactSessionPrune(result: SessionPruneResult): Record<string, unknown> {
+  return {
+    dry_run: result.dry_run,
+    max_age_ms: result.max_age_ms,
+    pruned_session_count: result.pruned_session_count,
+    pruned_sessions: result.pruned_sessions.map(compactSession)
   };
 }
 
@@ -2034,6 +2051,10 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
   );
   const mode = await resolveInitMode(context.root, requestedMode);
   const slotStaleAfterMs = parsePositiveInt(option(context.options, 'slot-stale-after-ms'), 'slot-stale-after-ms');
+  const sessionStaleAfterMs = parsePositiveInt(
+    option(context.options, 'session-stale-after-ms'),
+    'session-stale-after-ms'
+  );
   const effectivePromptConfig = promptConfig ?? (await collectInitPromptConfig(context, rootCheck));
   const slotRequests = [...optionList(context.options, 'slot')];
   for (const cloneJob of effectivePromptConfig.cloneJobs) {
@@ -2053,7 +2074,8 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
   }
 
   const registry = await context.service.init({
-    slotStaleAfterMs
+    slotStaleAfterMs,
+    sessionStaleAfterMs
   });
   const discoveredSlots = registry.resources
     .filter((resource) => resource.resource_type === 'slot')
@@ -2265,7 +2287,7 @@ function shouldRenderInteractiveInit(context: CliContext, key: string): boolean 
 }
 
 function shouldRenderBrief(context: CliContext, key: string): boolean {
-  return Boolean(context.options.brief) && ['status', 'slot acquire', 'session list'].includes(key);
+  return Boolean(context.options.brief) && ['status', 'slot acquire', 'session list', 'session prune'].includes(key);
 }
 
 function renderBriefPayload(key: string, result: unknown): unknown {
@@ -2279,6 +2301,10 @@ function renderBriefPayload(key: string, result: unknown): unknown {
 
   if (key === 'session list') {
     return compactSessionList(result as { active_sessions: SessionManifest[] });
+  }
+
+  if (key === 'session prune') {
+    return compactSessionPrune(result as SessionPruneResult);
   }
 
   return result;
@@ -2553,6 +2579,14 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
     ],
     ['session list', async () => context.service.sessionList()],
     [
+      'session prune',
+      async () =>
+        context.service.sessionPrune({
+          maxAgeMs: parsePositiveInt(option(context.options, 'max-age-ms'), 'max-age-ms'),
+          dryRun: Boolean(context.options['dry-run'])
+        })
+    ],
+    [
       'adapter claude-code install',
       async () =>
         installClaudeCodeAdapter({
@@ -2796,6 +2830,7 @@ export const __test__ = {
   compactSlotAcquire,
   compactSession,
   compactSessionList,
+  compactSessionPrune,
   resolveSelectedApplication,
   chooseDefaultCloneSource,
   buildCloneSlotBase,

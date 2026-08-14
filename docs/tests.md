@@ -45,6 +45,8 @@ Package-install coverage runs from fresh temp directories outside the monorepo s
 - session-end cleanup releases owned claims
 - crash recovery leaves claims until stale recovery clears them
 - `status` reports janitor-driven releases in `janitor.released_claims`
+- quiet sessions are ended by the janitor and reported in `janitor.ended_sessions`
+- `session prune` previews with `--dry-run`, honors `--max-age-ms`, and never ends a session that still holds a live claim
 - corrupted registry fails fast with a schema error
 - missing session manifest produces a missing-session error
 

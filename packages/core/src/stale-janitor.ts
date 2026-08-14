@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_STALE_MS } from './constants.js';
 import type { RegistryDocument, RegistryResource, ResourceClaim, SessionManifest } from './types.js';
 
 function claimReferenceTime(claim: ResourceClaim): string {
@@ -55,6 +56,32 @@ function isStale(
   return nowMs - parsed > claim.stale_after_ms;
 }
 
+function sessionsHoldingLiveClaims(registry: RegistryDocument): Set<string> {
+  const held = new Set<string>();
+
+  for (const resource of registry.resources) {
+    if (resource.status !== 'claimed' || !resource.claim) {
+      continue;
+    }
+
+    held.add(resource.claim.owner_session_id);
+    for (const delegation of resource.delegations ?? []) {
+      held.add(delegation.child_session_id);
+    }
+  }
+
+  return held;
+}
+
+function isStaleSession(session: SessionManifest, nowMs: number, staleAfterMs: number): boolean {
+  const parsed = new Date(session.updated_at).getTime();
+  if (Number.isNaN(parsed)) {
+    return true;
+  }
+
+  return nowMs - parsed > staleAfterMs;
+}
+
 export class StaleJanitor {
   /**
    * Applies stale-claim recovery in memory before the registry is written back.
@@ -95,5 +122,35 @@ export class StaleJanitor {
     }
 
     return staleResources;
+  }
+
+  defaultSessionStaleAfter(registry: RegistryDocument): number {
+    const configured = registry.workspace?.config?.janitor?.session_stale_after_ms;
+    return typeof configured === 'number' && Number.isInteger(configured) && configured > 0
+      ? configured
+      : DEFAULT_SESSION_STALE_MS;
+  }
+
+  /**
+   * Selects active sessions that have gone quiet for longer than the session stale window.
+   * Call this after releaseStaleClaims so a claim that was just recovered no longer
+   * protects the session that abandoned it.
+   */
+  collectStaleSessions(
+    registry: RegistryDocument,
+    options: {
+      now?: Date;
+      sessions?: SessionManifest[];
+      staleAfterMs?: number;
+    } = {}
+  ): SessionManifest[] {
+    const nowMs = (options.now ?? new Date()).getTime();
+    const staleAfterMs = options.staleAfterMs ?? this.defaultSessionStaleAfter(registry);
+    const heldByClaim = sessionsHoldingLiveClaims(registry);
+
+    return (options.sessions ?? []).filter(
+      (session) =>
+        !session.ended_at && !heldByClaim.has(session.session_id) && isStaleSession(session, nowMs, staleAfterMs)
+    );
   }
 }

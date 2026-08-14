@@ -6,6 +6,21 @@ All notable changes to `docko-workspace` are documented here. The format is base
 
 ## [Unreleased]
 
+### Added
+
+- The stale janitor now ends sessions that stop reporting activity, using the new
+  `config.janitor.session_stale_after_ms` knob (default 24 hours, also settable with
+  `init --session-stale-after-ms`). Sessions are swept after claim recovery and a session that still
+  owns or is delegated a live claim is never ended. `docko status` reports them under
+  `janitor.ended_sessions` and the debug log records `stale-session-recovery`.
+- `docko session prune` runs the same sweep on demand, with `--max-age-ms <n>` to override the window
+  for one run, `--dry-run` to preview without writing, and `--brief` for compact agent output.
+
+### Fixed
+
+- Abandoned sessions no longer accumulate as active forever when a runtime crashes without calling
+  `session end`, which made `docko session list` grow unbounded.
+
 ## [0.1.0-alpha.15]
 
 ### Added
