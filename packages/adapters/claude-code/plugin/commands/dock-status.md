@@ -1,3 +1,7 @@
+---
+description: Show current docko slot and resource state for this workspace
+---
+
 Show current `docko` slot and resource state for this workspace.
 
 Use this first. Do not inspect every slot folder manually before checking the public docko status.

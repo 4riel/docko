@@ -52,5 +52,9 @@ if (restore) {
     if (existsSync(join(packageDir, 'templates'))) {
       cpSync(join(packageDir, 'templates'), join(targetDir, 'templates'), { recursive: true });
     }
+
+    if (existsSync(join(packageDir, 'plugin'))) {
+      cpSync(join(packageDir, 'plugin'), join(targetDir, 'plugin'), { recursive: true });
+    }
   }
 }

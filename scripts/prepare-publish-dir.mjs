@@ -85,6 +85,11 @@ function copyPackage(packageName, packagePath) {
     cpSync(join(sourceDir, 'templates'), join(stagePackageDir, 'templates'), { recursive: true });
     cpSync(join(sourceDir, 'templates'), join(stagedNodeModuleDir, 'templates'), { recursive: true });
   }
+
+  if (existsSync(join(sourceDir, 'plugin'))) {
+    cpSync(join(sourceDir, 'plugin'), join(stagePackageDir, 'plugin'), { recursive: true });
+    cpSync(join(sourceDir, 'plugin'), join(stagedNodeModuleDir, 'plugin'), { recursive: true });
+  }
 }
 
 if (distPaths.some((distPath) => !existsSync(distPath))) {

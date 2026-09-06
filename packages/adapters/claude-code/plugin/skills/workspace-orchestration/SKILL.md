@@ -13,7 +13,7 @@ Use this skill whenever work touches files in `slots/` or when the user asks abo
 
 1. Start at the workspace root.
 2. Run `/dock-status` or `docko status --root . --brief`.
-3. Prefer `docko slot acquire --root . --branch <branch> --task "<task>" --brief` when you want docko to choose the next available slot using round-robin selection.
+3. Prefer `docko slot acquire --root . --branch <branch> --task "<task>" --brief` when you want docko to choose the first free slot.
 4. If every slot is busy and docko asks whether it should create a fresh managed clone, answer explicitly.
 5. Use `docko claim --root . --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot.
 6. Do the work inside that slot.

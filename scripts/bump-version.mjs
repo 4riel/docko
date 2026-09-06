@@ -15,7 +15,8 @@ const MANIFESTS = [
   'package.json',
   'packages/core/package.json',
   'packages/cli/package.json',
-  'packages/adapters/claude-code/package.json'
+  'packages/adapters/claude-code/package.json',
+  'packages/adapters/claude-code/plugin/.claude-plugin/plugin.json'
 ];
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;

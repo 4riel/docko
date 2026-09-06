@@ -83,13 +83,29 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
   const pluginRoot = path.resolve(workspaceRoot, options.destination ?? DEFAULT_PLUGIN_DESTINATION);
   const packageRoot = resolvePackageRoot();
   const templatesRoot = path.join(packageRoot, 'templates');
+  // The distributable Claude Code plugin bundle is the canonical source for hook
+  // scripts, commands, and skills. The repo-local install remaps its layout into
+  // the target project (.claude-plugin/docko + .claude/*).
+  const pluginBundleRoot = path.join(packageRoot, 'plugin');
   const force = Boolean(options.force);
   const platform = process.platform;
   const version = await readPackageVersion(packageRoot);
 
   const pluginResult = await copyManagedTree({
-    sourceRoot: path.join(templatesRoot, 'plugin'),
-    destinationRoot: pluginRoot,
+    sourceRoot: path.join(pluginBundleRoot, 'scripts'),
+    destinationRoot: path.join(pluginRoot, 'scripts'),
+    force
+  });
+
+  const commandsResult = await copyManagedTree({
+    sourceRoot: path.join(pluginBundleRoot, 'commands'),
+    destinationRoot: path.join(workspaceRoot, '.claude', 'commands'),
+    force
+  });
+
+  const skillsResult = await copyManagedTree({
+    sourceRoot: path.join(pluginBundleRoot, 'skills'),
+    destinationRoot: path.join(workspaceRoot, '.claude', 'skills'),
     force
   });
 
@@ -108,8 +124,20 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
   });
 
   let settingsFile: string | null = null;
-  const writtenFiles = [...pluginResult.written, ...projectResult.written, ...generatedResult.written];
-  const skippedFiles = [...pluginResult.skipped, ...projectResult.skipped, ...generatedResult.skipped];
+  const writtenFiles = [
+    ...pluginResult.written,
+    ...commandsResult.written,
+    ...skillsResult.written,
+    ...projectResult.written,
+    ...generatedResult.written
+  ];
+  const skippedFiles = [
+    ...pluginResult.skipped,
+    ...commandsResult.skipped,
+    ...skillsResult.skipped,
+    ...projectResult.skipped,
+    ...generatedResult.skipped
+  ];
 
   if (options.writeSettingsLocal) {
     settingsFile = path.join(workspaceRoot, '.claude', 'settings.local.json');

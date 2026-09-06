@@ -7,7 +7,35 @@ Source repository: [`4riel/docko`](https://github.com/4riel/docko)
 Current install tag: `docko-workspace@alpha`
 CLI command: `docko`
 
-Install the CLI first if it is not already available:
+There are two ways to wire Claude Code to docko. Both share the same hook launcher, commands, and skill; they differ only in where those files live.
+
+## Install As A Claude Code Plugin (Recommended)
+
+The repository doubles as a Claude Code plugin marketplace. Inside Claude Code run:
+
+```
+/plugin marketplace add 4riel/docko
+/plugin install docko@docko
+```
+
+That installs the plugin bundle from `packages/adapters/claude-code/plugin/`: the four hooks, the `/dock-*` commands, and the `workspace-orchestration` skill. Nothing is written into your project.
+
+Then bootstrap any workspace root once:
+
+```bash
+docko init --root .
+```
+
+Plugin behavior worth knowing:
+
+- Hooks no-op silently in projects without a `docko/registry.json`, so the plugin can stay enabled globally.
+- Hooks call the `docko` CLI. Install it globally (`npm install --global docko-workspace@alpha`) for fast hooks; if it is missing from `PATH` the launcher falls back to `npx docko-workspace@alpha`, which is slower on first run. `DOCKO_BIN` overrides both.
+- `PreToolUse` denials are reported through the hook protocol (`permissionDecision: "deny"`), so unauthorized slot writes are actually blocked. Authorized writes emit nothing: docko vetoes, it never widens your normal permission flow.
+- `SessionStart` registers the Claude session with docko using Claude's own session id, so later hook calls resolve the right session even with several concurrent sessions in one workspace.
+
+## Repo-Local Install (`docko init --claude`)
+
+If you prefer everything checked into the project (no plugin system involved), install the CLI first if it is not already available:
 
 ```bash
 npm install --global docko-workspace@alpha
@@ -201,6 +229,6 @@ This repo does not currently ship a Docko Codex adapter package, Codex templates
 
 ## Notes
 
-- The Node hook launcher assumes `docko` is on `PATH`. For local testing, set `DOCKO_BIN` to an absolute executable path.
+- The Node hook launcher prefers `docko` on `PATH` and falls back to `npx docko-workspace@alpha` when it is missing. For local testing, set `DOCKO_BIN` to an absolute executable path (on Windows a multi-token value like `node "C:\path\to\docko.js"` also works).
 - If you do not want automatic settings merging, install without `--write-settings-local` and merge `.claude/settings.docko.json` manually.
 - The repo-local `.claude-plugin/docko/` bundle is intentionally plain. It avoids hiding protocol logic behind opaque Claude-only behavior.

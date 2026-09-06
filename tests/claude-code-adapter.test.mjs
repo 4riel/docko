@@ -100,7 +100,13 @@ test('Claude adapter install writes repo-local assets and merges settings idempo
     path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs'),
     'utf8'
   );
-  assert.match(hookScript, /shell: process\.platform === 'win32'/);
+  assert.match(hookScript, /useShell = process\.platform === 'win32'/);
+  // The installed launcher is the same file the distributable plugin ships.
+  const bundledScript = await readFile(
+    path.join(repoRoot, 'packages', 'adapters', 'claude-code', 'plugin', 'scripts', 'docko-claude-hook.mjs'),
+    'utf8'
+  );
+  assert.equal(hookScript, bundledScript);
 
   const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
   assert.equal(settings.hooks.Notification.length, 1);
@@ -130,7 +136,7 @@ test('Claude adapter install writes repo-local assets and merges settings idempo
   assert.match(agentsSnippet, /Do not inspect slots one by one or use `docko\/registry\.json` as a normal fallback/);
 });
 
-test('Installed Claude settings commands run real session and write-authorization flows', async () => {
+test('Installed hook launcher speaks the Claude Code hook output protocol', async () => {
   const { installClaudeCodeAdapter } = await loadAdapterModule();
   const root = await makeWorkspace();
   await runCli(['init', '--root', root]);
@@ -140,26 +146,31 @@ test('Installed Claude settings commands run real session and write-authorizatio
   // Windows a multi-token `node "<path>"` works because the shell re-parses it.
   const dockoScript = path.join(repoRoot, 'bin', 'docko.js');
   const dockoBinCommand = process.platform === 'win32' ? `node ${JSON.stringify(dockoScript)}` : dockoScript;
+  const hookEnv = {
+    DOCKO_BIN: dockoBinCommand,
+    CLAUDE_PROJECT_DIR: root
+  };
 
   const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
   const sessionStartCommand = settings.hooks.SessionStart[0].hooks[0].command;
+  const preToolUseCommand = settings.hooks.PreToolUse[0].hooks[0].command;
+
+  // SessionStart adopts Claude's session id and injects context via hookSpecificOutput.
+  const ownerSessionId = 'claude-hook-owner';
   const sessionStart = await runShellJson(sessionStartCommand, {
     cwd: root,
-    env: {
-      DOCKO_BIN: dockoBinCommand,
-      CLAUDE_PROJECT_DIR: root
-    }
+    env: hookEnv,
+    input: JSON.stringify({ session_id: ownerSessionId, hook_event_name: 'SessionStart', cwd: root })
   });
-
-  assert.equal(sessionStart.env.DOCKO_RUNTIME, 'claude-code');
-  const sessionId = sessionStart.env.DOCKO_SESSION_ID;
+  assert.equal(sessionStart.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.match(sessionStart.hookSpecificOutput.additionalContext, new RegExp(ownerSessionId));
 
   await runCli([
     'claim',
     '--root',
     root,
     '--session',
-    sessionId,
+    ownerSessionId,
     '--resource',
     'slot',
     '--id',
@@ -170,24 +181,66 @@ test('Installed Claude settings commands run real session and write-authorizatio
     'wire claude adapter'
   ]);
 
-  const preToolUseCommand = settings.hooks.PreToolUse[0].hooks[0].command;
-  const allowed = await runShellJson(preToolUseCommand, {
+  // Authorized writes emit nothing: docko only vetoes, it never grants permission.
+  const allowed = await runShellCommand(preToolUseCommand, {
     cwd: root,
-    env: {
-      DOCKO_BIN: dockoBinCommand,
-      DOCKO_SESSION_ID: sessionId,
-      CLAUDE_PROJECT_DIR: root
-    },
+    env: hookEnv,
     input: JSON.stringify({
+      session_id: ownerSessionId,
       tool_name: 'Write',
       tool_input: {
         file_path: path.join(root, 'slots', 'app-alpha', 'src', 'index.ts')
       }
     })
   });
+  assert.equal(allowed.code, 0, allowed.stderr || allowed.stdout);
+  assert.equal(allowed.stdout, '');
 
-  assert.equal(allowed.allow, true);
-  assert.equal(allowed.reason, 'owner-session');
+  // A different active session writing into the owner's slot gets a deny decision.
+  const outsiderSessionId = 'claude-hook-outsider';
+  await runShellJson(sessionStartCommand, {
+    cwd: root,
+    env: hookEnv,
+    input: JSON.stringify({ session_id: outsiderSessionId, hook_event_name: 'SessionStart', cwd: root })
+  });
+  const denied = await runShellJson(preToolUseCommand, {
+    cwd: root,
+    env: hookEnv,
+    input: JSON.stringify({
+      session_id: outsiderSessionId,
+      tool_name: 'Write',
+      tool_input: {
+        file_path: path.join(root, 'slots', 'app-alpha', 'src', 'index.ts')
+      }
+    })
+  });
+  assert.equal(denied.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /docko blocked this write/);
+});
+
+test('Hook launcher stays silent outside docko workspaces', async () => {
+  const { installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  const dockoScript = path.join(repoRoot, 'bin', 'docko.js');
+  const dockoBinCommand = process.platform === 'win32' ? `node ${JSON.stringify(dockoScript)}` : dockoScript;
+
+  // No `docko init` ran, so there is no docko/registry.json: the launcher must no-op
+  // so the plugin can stay enabled globally without touching unrelated projects.
+  const result = await runShellCommand('node ".claude-plugin/docko/scripts/docko-claude-hook.mjs" session-start', {
+    cwd: root,
+    env: {
+      DOCKO_BIN: dockoBinCommand,
+      CLAUDE_PROJECT_DIR: root
+    },
+    input: JSON.stringify({ session_id: 'claude-noop', hook_event_name: 'SessionStart', cwd: root })
+  });
+
+  assert.equal(result.code, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
 });
 
 test('Claude adapter install fails cleanly on invalid existing settings JSON', async () => {

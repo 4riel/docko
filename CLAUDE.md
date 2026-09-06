@@ -13,7 +13,7 @@
 ```
 packages/core/       Protocol semantics, registry/session persistence, claims, delegation, stale cleanup
 packages/cli/        JSON CLI over DockoService (single index.ts with all commands)
-packages/adapters/claude-code/  Claude Code runtime adapter: templates, hooks, installer
+packages/adapters/claude-code/  Claude Code runtime adapter: plugin bundle, templates, hooks, installer
 schemas/             Canonical JSON Schema for registry.json and session.json
 tests/               Unit, service, e2e, CLI, and adapter tests (Node test runner)
 docs/                Public documentation (21 files, see docs/INDEX.md)
@@ -104,6 +104,7 @@ Tests run against built `dist/` output, not source. Always build before testing.
 - `tests/docko.e2e.test.mjs` - end-to-end CLI flows: init, claims, release, delegation, stale recovery, authorization
 - `tests/cli.unit.test.mjs` - CLI parser, interactive init, prompt flows, payload fallbacks
 - `tests/claude-code-adapter.test.mjs` - adapter settings, installer, settings merge, hook command execution
+- `tests/claude-plugin.test.mjs` - distributable plugin bundle: manifests, marketplace, hooks shape, launcher protocol guards
 - `tests/helpers/cli-test-helpers.mjs` - shared workspace and child-process helpers
 
 Tests run sequentially to avoid CLI child-process contention. Coverage is gathered from built `dist/` outputs.
@@ -122,16 +123,14 @@ Tests run sequentially to avoid CLI child-process contention. Coverage is gather
 
 ## Claude Code Adapter
 
-The only implemented runtime adapter. Installed via `docko init --claude` or `docko adapter claude-code install`.
+The only implemented runtime adapter. Two install paths sharing the same assets:
 
-Writes:
-- `.claude-plugin/docko/` (plugin manifest, hooks, scripts)
-- `.claude/commands/dock-*.md` (4 commands)
-- `.claude/skills/workspace-orchestration/SKILL.md`
-- `.claude/snippets/CLAUDE.docko.md` and `AGENTS.docko.md`
-- `.claude/settings.docko.json` and `.claude/settings.local.json`
+1. **Claude Code plugin (distributable)**: `packages/adapters/claude-code/plugin/` is a committed, installable plugin bundle (`.claude-plugin/plugin.json`, `hooks/hooks.json` with `${CLAUDE_PLUGIN_ROOT}` commands, `commands/`, `skills/`, `scripts/`). The repo-root `.claude-plugin/marketplace.json` makes this repo a plugin marketplace (`/plugin marketplace add 4riel/docko`, `/plugin install docko@docko`). The plugin dir is the canonical source for the hook launcher, dock-* commands, and the workspace-orchestration skill.
+2. **Repo-local install**: `docko init --claude` or `docko adapter claude-code install` copies from the plugin bundle into the target project (`.claude-plugin/docko/`, `.claude/commands/`, `.claude/skills/`) plus snippets from `templates/project/` and generated settings (`.claude/settings.docko.json`, `.claude/settings.local.json`).
 
-Four hooks: SessionStart, SessionEnd, PreToolUse (Edit|Write), SubagentStart.
+Four hooks: SessionStart, SessionEnd, PreToolUse (Edit|Write), SubagentStart. The hook launcher (`plugin/scripts/docko-claude-hook.mjs`) translates CLI JSON into the Claude Code hook protocol (`hookSpecificOutput`, `permissionDecision`), no-ops outside docko workspaces, passes Claude's `session_id` as `--session`, falls back to `npx docko-workspace@alpha` when `docko` is not on PATH, and fails open on errors.
+
+The plugin manifest version must match the package versions — `scripts/bump-version.mjs` bumps it and `tests/claude-plugin.test.mjs` enforces it.
 
 ## Publishing
 

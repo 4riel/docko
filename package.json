@@ -33,7 +33,8 @@
     "packages/core/package.json",
     "packages/adapters/claude-code/dist/**",
     "packages/adapters/claude-code/package.json",
-    "packages/adapters/claude-code/templates/**"
+    "packages/adapters/claude-code/templates/**",
+    "packages/adapters/claude-code/plugin/**"
   ],
   "bin": {
     "docko": "bin/docko.js"
