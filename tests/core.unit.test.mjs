@@ -88,8 +88,14 @@ test('SessionSherpa covers missing session paths and resolution modes', async ()
   assert.equal(resolution.sessionId, 'explicit');
 
   resolution = await sherpa.resolve(null, 'env-session');
+  assert.equal(resolution.source, 'single-active');
+  assert.equal(resolution.sessionId, single.session_id);
+  assert.equal(resolution.envSessionMatched, false);
+
+  resolution = await sherpa.resolve(null, 'single');
   assert.equal(resolution.source, 'env');
-  assert.equal(resolution.sessionId, 'env-session');
+  assert.equal(resolution.sessionId, 'single');
+  assert.equal(resolution.envSessionMatched, true);
 
   await sherpa.start({
     sessionId: 'second',
@@ -203,10 +209,16 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
     bouncer.authorizeFileWrite(registry, 'child', path.join(workspaceRoot, 'slots', 'app-alpha', 'src', 'index.ts')),
     {
       allowed: true,
-      reason: 'delegated-child',
+      reason: 'delegated',
       session_id: 'child',
       resource_id: 'app-alpha',
-      owner_session_id: 'owner'
+      owner_session_id: 'owner',
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: 1000,
+      previous_owner_session_id: null
     }
   );
 
@@ -217,7 +229,13 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       reason: 'unrelated-session',
       session_id: 'intruder',
       resource_id: 'app-alpha',
-      owner_session_id: 'owner'
+      owner_session_id: 'owner',
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: 1000,
+      previous_owner_session_id: null
     }
   );
 
@@ -228,7 +246,13 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       reason: 'slot-not-claimed',
       session_id: 'owner',
       resource_id: 'app-beta',
-      owner_session_id: null
+      owner_session_id: null,
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: null,
+      previous_owner_session_id: null
     }
   );
 
@@ -290,7 +314,7 @@ test(
     );
 
     assert.equal(authorization.allowed, true);
-    assert.equal(authorization.reason, 'owner-session');
+    assert.equal(authorization.reason, 'owner');
   }
 );
 

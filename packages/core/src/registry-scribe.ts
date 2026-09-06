@@ -1,7 +1,15 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { DockoError } from './errors.js';
-import { atomicWriteJson, atomicWriteText, ensureDir, isEnoent, listDirectories, readJsonFile } from './fs-utils.js';
+import {
+  atomicWriteJson,
+  atomicWriteText,
+  ensureDir,
+  isEnoent,
+  listDirectories,
+  readJsonFile,
+  sweepStaleTempArtifacts
+} from './fs-utils.js';
 import { MirrorSmith } from './mirror-smith.js';
 import { getPaths, type DockoPaths } from './paths.js';
 import { SCHEMA_VERSION } from './constants.js';
@@ -18,9 +26,12 @@ export class RegistryScribe {
    */
   private readonly paths: DockoPaths;
   private readonly mirrorSmith = new MirrorSmith();
+  private readonly onMirrorError?: (error: unknown) => void;
+  private tempArtifactsSwept = false;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, options: { onMirrorError?: (error: unknown) => void } = {}) {
     this.paths = getPaths(workspaceRoot);
+    this.onMirrorError = options.onMirrorError;
   }
 
   getPaths(): DockoPaths {
@@ -56,11 +67,77 @@ export class RegistryScribe {
     return this.cloneRegistry(registry);
   }
 
+  /**
+   * Reads the registry without creating anything and without the mutation lock.
+   * Used by read-only fast paths that must never write; returns null when there is no workspace.
+   */
+  async readRegistryUnlocked(): Promise<RegistryDocument | null> {
+    try {
+      const registry = await readJsonFile<RegistryDocument>(this.paths.registryPath);
+      this.validateRegistry(registry);
+      return this.cloneRegistry(registry);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Serializes the comparable part of a registry document.
+   * `generated_at` is excluded so an unchanged registry compares equal across passes.
+   */
+  serialize(registry: RegistryDocument): string {
+    return JSON.stringify({ ...this.cloneRegistry(registry), generated_at: null });
+  }
+
   async writeRegistry(registry: RegistryDocument): Promise<void> {
+    await this.sweepTempArtifactsOnce();
     const next = this.cloneRegistry(registry);
     next.generated_at = new Date().toISOString();
     await atomicWriteJson(this.paths.registryPath, next);
-    await atomicWriteText(this.paths.mirrorPath, this.mirrorSmith.render(next));
+    await this.writeMirror(next);
+  }
+
+  /**
+   * Writes only when the document actually changed, so read-only commands stop churning
+   * registry.json and registry.md on every call.
+   */
+  async writeRegistryIfChanged(
+    registry: RegistryDocument,
+    previousSerialized: string,
+    options: { forceMirror?: boolean } = {}
+  ): Promise<boolean> {
+    if (this.serialize(registry) === previousSerialized) {
+      if (options.forceMirror) {
+        await this.writeMirror(this.cloneRegistry(registry));
+      }
+      return false;
+    }
+
+    await this.writeRegistry(registry);
+    return true;
+  }
+
+  /**
+   * Reclaims write artifacts from processes killed mid-write.
+   * Once per instance is enough: a CLI invocation writes the registry a handful of times.
+   */
+  private async sweepTempArtifactsOnce(): Promise<void> {
+    if (this.tempArtifactsSwept) {
+      return;
+    }
+
+    this.tempArtifactsSwept = true;
+    await sweepStaleTempArtifacts(this.paths.dockoDir);
+    await sweepStaleTempArtifacts(this.paths.sessionsDir);
+  }
+
+  private async writeMirror(registry: RegistryDocument): Promise<void> {
+    try {
+      await atomicWriteText(this.paths.mirrorPath, this.mirrorSmith.render(registry));
+    } catch (error: unknown) {
+      // The mirror is generated output: a failed render must never fail the command.
+      this.onMirrorError?.(error);
+    }
   }
 
   buildStatus(registry: RegistryDocument, resourceType?: string, resourceId?: string): Omit<StatusResult, 'janitor'> {

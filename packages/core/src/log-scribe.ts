@@ -27,6 +27,7 @@ function clampPositiveInteger(value: number | undefined, fallback: number): numb
 
 export class LogScribe {
   private readonly paths: DockoPaths;
+  private pruned = false;
 
   constructor(workspaceRoot: string) {
     this.paths = getPaths(workspaceRoot);
@@ -102,7 +103,16 @@ export class LogScribe {
     return entries;
   }
 
+  /**
+   * Retention is a housekeeping concern, not a per-append one: one directory scan per process
+   * keeps the write path off the readdir path.
+   */
   private async pruneExpired(now = new Date()): Promise<void> {
+    if (this.pruned) {
+      return;
+    }
+    this.pruned = true;
+
     let names: string[];
     try {
       names = await readdir(this.paths.logsDir);
