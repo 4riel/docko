@@ -67,6 +67,15 @@ export interface ResourceClaim {
   release_reason: string | null;
 }
 
+export interface ResourceLastClaim {
+  owner_session_id: string;
+  released_at: string;
+  reason: string;
+  branch: string | null;
+  task: string | null;
+  stale_after_ms: number | null;
+}
+
 export interface RegistryResource {
   resource_type: ResourceType | (string & {});
   resource_id: string;
@@ -75,7 +84,11 @@ export interface RegistryResource {
   slot_name?: string | null;
   status: ResourceStatus;
   claim?: ResourceClaim | null;
+  // Last claim released from this resource, kept so a denied write can explain why the slot is free.
+  last_claim?: ResourceLastClaim | null;
   delegations?: ResourceDelegation[];
+  // Omitted means true; only the opt-out from `slot acquire` rotation is persisted.
+  auto_acquire?: boolean;
 }
 
 export interface RegistryDocument {
@@ -89,6 +102,9 @@ export interface RegistryDocument {
 export interface StatusJanitorResult {
   released_claims: RegistryResource[];
   ended_sessions: SessionManifest[];
+  // True when the pass hit its per-pass session cap and more stale sessions remain.
+  ended_sessions_truncated: boolean;
+  deleted_manifests: number;
 }
 
 export interface StatusResult {
@@ -96,6 +112,9 @@ export interface StatusResult {
   workspace: WorkspaceDescriptor;
   applications: WorkspaceApplication[];
   resources: RegistryResource[];
+  // Workspace-relative directories under slots/ that discovery skipped because their name is not
+  // a usable resource id. They can never be claimed until they are renamed.
+  ignored_slot_dirs: string[];
   janitor: StatusJanitorResult;
 }
 
@@ -108,6 +127,8 @@ export interface SessionPruneOptions {
   // Overrides the workspace session stale timeout for this run only.
   maxAgeMs?: number;
   dryRun?: boolean;
+  // Retention window for ended manifests on disk. Defaults to 7 days.
+  deleteEndedOlderThanMs?: number;
 }
 
 export interface SessionPruneResult {
@@ -115,6 +136,8 @@ export interface SessionPruneResult {
   max_age_ms: number;
   pruned_session_count: number;
   pruned_sessions: SessionManifest[];
+  retention_ms: number;
+  deleted_manifests: number;
 }
 
 export interface SessionStartOptions {
@@ -145,6 +168,8 @@ export interface EnsureResourceOptions {
   resourceType: string;
   resourceId: string;
   path?: string | null;
+  /** When false, `slot acquire` rotation skips the slot; an explicit claim or --prefer still reaches it. */
+  autoAcquire?: boolean;
 }
 
 export interface EnsureApplicationOptions {
@@ -177,12 +202,32 @@ export interface HeartbeatOptions {
   resourceId: string;
 }
 
+export type AuthorizationReason =
+  'path-not-managed' | 'owner' | 'delegated' | 'slot-not-claimed' | 'claim-expired' | 'unrelated-session';
+
 export interface AuthorizationResult {
   allowed: boolean;
-  reason: string;
+  reason: AuthorizationReason;
   session_id: string;
   resource_id: string | null;
   owner_session_id: string | null;
+  // Present when the answer depends on a claim, so a denial can explain itself without a second call.
+  owner_task?: string | null;
+  owner_branch?: string | null;
+  owner_session_active?: boolean | null;
+  expired_at?: string | null;
+  claim_stale_after_ms?: number | null;
+  previous_owner_session_id?: string | null;
+  // Slot identity, so an adapter can render a workable retry command without a second lookup.
+  // `slot_path` stays workspace-relative here; the CLI resolves it against the workspace root.
+  application_id?: string | null;
+  slot_path?: string | null;
+  // Set when the write targets a slot directory whose name is not a usable resource id, so the
+  // adapter can tell the agent to rename the directory instead of trying to claim it.
+  invalid_slot_dir?: string | null;
+  // Whether the acting session is registered and active. `null` on the unlocked fast path, which
+  // answers paths outside the slots tree without reading session state at all.
+  session_known?: boolean | null;
 }
 
 export type LogOutcome = 'ok' | 'error';

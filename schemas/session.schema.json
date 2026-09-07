@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docko.dev/schemas/session.schema.json",
   "title": "docko session manifest",
-  "description": "Canonical session manifest persisted under docko/sessions/<session-id>.json.",
+  "description": "Canonical session manifest persisted under docko/sessions/<session-id>.json while the session is active, and under docko/sessions/ended/<session-id>.json once it has ended.",
   "type": "object",
   "required": [
     "schema_version",

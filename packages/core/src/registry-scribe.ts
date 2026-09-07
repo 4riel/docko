@@ -1,10 +1,18 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { DockoError } from './errors.js';
-import { atomicWriteJson, atomicWriteText, ensureDir, isEnoent, listDirectories, readJsonFile } from './fs-utils.js';
+import { DockoError, isSafeId } from './errors.js';
+import {
+  atomicWriteJson,
+  atomicWriteText,
+  ensureDir,
+  isEnoent,
+  listDirectories,
+  readJsonFile,
+  sweepStaleTempArtifacts
+} from './fs-utils.js';
 import { MirrorSmith } from './mirror-smith.js';
 import { getPaths, type DockoPaths } from './paths.js';
-import { SCHEMA_VERSION } from './constants.js';
+import { SCHEMA_VERSION, SLOTS_DIR } from './constants.js';
 import type { RegistryDocument, RegistryResource, ResourceType, StatusResult, WorkspaceApplication } from './types.js';
 
 function qualifySlotResourceId(applicationId: string | null | undefined, slotName: string): string {
@@ -18,9 +26,13 @@ export class RegistryScribe {
    */
   private readonly paths: DockoPaths;
   private readonly mirrorSmith = new MirrorSmith();
+  private readonly onMirrorError?: (error: unknown) => void;
+  private tempArtifactsSwept = false;
+  private ignoredSlotDirs: string[] = [];
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, options: { onMirrorError?: (error: unknown) => void } = {}) {
     this.paths = getPaths(workspaceRoot);
+    this.onMirrorError = options.onMirrorError;
   }
 
   getPaths(): DockoPaths {
@@ -38,6 +50,7 @@ export class RegistryScribe {
 
   async ensureRegistry(): Promise<RegistryDocument> {
     await ensureDir(this.paths.dockoDir);
+    await this.sweepTempArtifactsOnce();
 
     let registry: RegistryDocument;
     try {
@@ -56,11 +69,84 @@ export class RegistryScribe {
     return this.cloneRegistry(registry);
   }
 
+  /**
+   * Reads the registry without creating anything and without the mutation lock.
+   * Used by read-only fast paths: it never creates a workspace and never writes registry.json or
+   * its mirror. It does reclaim abandoned temp artifacts, which is the one write the read path
+   * owns. Returns null when there is no readable registry.
+   */
+  async readRegistryUnlocked(): Promise<RegistryDocument | null> {
+    // Read-only commands are the common case, so the sweep has to happen here too: a workspace
+    // whose registry never changes would otherwise keep every artifact a killed writer left.
+    await this.sweepTempArtifactsOnce();
+    try {
+      const registry = await readJsonFile<RegistryDocument>(this.paths.registryPath);
+      this.validateRegistry(registry);
+      return this.cloneRegistry(registry);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Serializes the comparable part of a registry document.
+   * `generated_at` is excluded so an unchanged registry compares equal across passes.
+   */
+  serialize(registry: RegistryDocument): string {
+    return JSON.stringify({ ...this.cloneRegistry(registry), generated_at: null });
+  }
+
   async writeRegistry(registry: RegistryDocument): Promise<void> {
+    await this.sweepTempArtifactsOnce();
     const next = this.cloneRegistry(registry);
     next.generated_at = new Date().toISOString();
     await atomicWriteJson(this.paths.registryPath, next);
-    await atomicWriteText(this.paths.mirrorPath, this.mirrorSmith.render(next));
+    await this.writeMirror(next);
+  }
+
+  /**
+   * Writes only when the document actually changed, so read-only commands stop churning
+   * registry.json and registry.md on every call.
+   */
+  async writeRegistryIfChanged(
+    registry: RegistryDocument,
+    previousSerialized: string,
+    options: { forceMirror?: boolean } = {}
+  ): Promise<boolean> {
+    if (this.serialize(registry) === previousSerialized) {
+      if (options.forceMirror) {
+        await this.writeMirror(this.cloneRegistry(registry));
+      }
+      return false;
+    }
+
+    await this.writeRegistry(registry);
+    return true;
+  }
+
+  /**
+   * Reclaims write artifacts from processes killed mid-write, across the registry, session, and
+   * ended-session directories. Once per instance is enough: a CLI invocation touches the
+   * registry a handful of times, and the sweep itself never throws.
+   */
+  private async sweepTempArtifactsOnce(): Promise<void> {
+    if (this.tempArtifactsSwept) {
+      return;
+    }
+
+    this.tempArtifactsSwept = true;
+    await sweepStaleTempArtifacts(this.paths.dockoDir);
+    await sweepStaleTempArtifacts(this.paths.sessionsDir);
+    await sweepStaleTempArtifacts(this.paths.sessionsEndedDir);
+  }
+
+  private async writeMirror(registry: RegistryDocument): Promise<void> {
+    try {
+      await atomicWriteText(this.paths.mirrorPath, this.mirrorSmith.render(registry));
+    } catch (error: unknown) {
+      // The mirror is generated output: a failed render must never fail the command.
+      this.onMirrorError?.(error);
+    }
   }
 
   buildStatus(registry: RegistryDocument, resourceType?: string, resourceId?: string): Omit<StatusResult, 'janitor'> {
@@ -68,7 +154,8 @@ export class RegistryScribe {
       schema_version: registry.schema_version,
       workspace: registry.workspace,
       applications: registry.applications,
-      resources: this.filterResources(registry, resourceType, resourceId)
+      resources: this.filterResources(registry, resourceType, resourceId),
+      ignored_slot_dirs: this.getIgnoredSlotDirs()
     };
   }
 
@@ -206,44 +293,83 @@ export class RegistryScribe {
     return next;
   }
 
+  /** Directories the last discovery pass skipped because their name is not a usable resource id. */
+  getIgnoredSlotDirs(): string[] {
+    return [...this.ignoredSlotDirs];
+  }
+
   async discoverSlotResources(registry: RegistryDocument): Promise<RegistryDocument> {
     const slotDirs = await listDirectories(this.paths.slotsDir);
+    const ignoredSlotDirs: string[] = [];
     const applicationIds = new Set((registry.applications ?? []).map((application) => application.application_id));
-    const discoveredSlotIds = new Set<string>();
+    // Free slots are dropped and re-created below; their release history and pins must survive that.
+    const lastClaims = new Map(
+      registry.resources
+        .filter((resource) => resource.resource_type === 'slot' && resource.last_claim)
+        .map((resource) => [resource.resource_id, resource.last_claim])
+    );
+    const pinnedSlotIds = new Set(
+      registry.resources
+        .filter((resource) => resource.resource_type === 'slot' && resource.auto_acquire === false)
+        .map((resource) => resource.resource_id)
+    );
 
-    registry.resources = registry.resources.filter((resource) => {
-      if (resource.resource_type !== 'slot') {
-        return true;
-      }
-
-      if (discoveredSlotIds.has(resource.resource_id)) {
-        return true;
-      }
-
-      return resource.status === 'claimed';
-    });
+    // Every free slot is re-created below from what is actually on disk, so a free resource
+    // whose directory is gone simply disappears. Claimed slots survive a missing directory:
+    // dropping them would silently discard someone's claim.
+    registry.resources = registry.resources.filter(
+      (resource) => resource.resource_type !== 'slot' || resource.status === 'claimed'
+    );
 
     for (const slotId of slotDirs) {
+      // A directory whose name is not a usable id could be discovered but never claimed
+      // (`claim` rejects it with INVALID_ID), which left writes into it denied forever. Skip it
+      // and report it so the workspace owner knows to rename the directory.
+      if (!isSafeId(slotId)) {
+        ignoredSlotDirs.push(`${SLOTS_DIR}/${slotId}`);
+        continue;
+      }
+
       if (applicationIds.has(slotId)) {
         const applicationSlots = await listDirectories(path.join(this.paths.slotsDir, slotId));
         for (const slotName of applicationSlots) {
+          if (!isSafeId(slotName)) {
+            ignoredSlotDirs.push(`${SLOTS_DIR}/${slotId}/${slotName}`);
+            continue;
+          }
+
           const resourceId = qualifySlotResourceId(slotId, slotName);
-          discoveredSlotIds.add(resourceId);
-          this.upsertResource(registry, 'slot', resourceId, `slots/${slotId}/${slotName}`, {
+          const resource = this.upsertResource(registry, 'slot', resourceId, `${SLOTS_DIR}/${slotId}/${slotName}`, {
             application_id: slotId,
             slot_name: slotName
           });
+          this.restoreSlotMetadata(resource, lastClaims, pinnedSlotIds);
         }
         continue;
       }
 
-      discoveredSlotIds.add(slotId);
-      this.upsertResource(registry, 'slot', slotId, `slots/${slotId}`, {
+      const resource = this.upsertResource(registry, 'slot', slotId, `${SLOTS_DIR}/${slotId}`, {
         application_id: null,
         slot_name: slotId
       });
+      this.restoreSlotMetadata(resource, lastClaims, pinnedSlotIds);
     }
+
+    this.ignoredSlotDirs = ignoredSlotDirs;
     return registry;
+  }
+
+  private restoreSlotMetadata(
+    resource: RegistryResource,
+    lastClaims: ReadonlyMap<string, RegistryResource['last_claim']>,
+    pinnedSlotIds: ReadonlySet<string>
+  ): void {
+    if (!resource.last_claim && lastClaims.has(resource.resource_id)) {
+      resource.last_claim = lastClaims.get(resource.resource_id);
+    }
+    if (pinnedSlotIds.has(resource.resource_id)) {
+      resource.auto_acquire = false;
+    }
   }
 
   private validateRegistry(registry: RegistryDocument): void {

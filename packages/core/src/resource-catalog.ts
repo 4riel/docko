@@ -29,16 +29,19 @@ export class ResourceCatalog {
   async ensure(registry: RegistryDocument, options: EnsureResourceOptions): Promise<RegistryResource> {
     const existing = this.registryScribe.getResource(registry, options.resourceType, options.resourceId);
     if (existing) {
-      if (options.path !== undefined && existing.status === 'claimed' && options.path !== existing.path) {
+      // `null` means "the caller passed no --path", not "clear the path". Treating it as a value
+      // rejected `--no-auto-acquire` on a claimed slot and wiped the path of every other resource.
+      if (options.path != null && existing.status === 'claimed' && options.path !== existing.path) {
         throw new DockoError('Cannot modify the path of a claimed resource.', 'RESOURCE_MUTATION_DENIED', 2, {
           resource_type: options.resourceType,
           resource_id: options.resourceId
         });
       }
 
-      if (options.path !== undefined && existing.resource_type !== 'slot') {
+      if (options.path != null && existing.resource_type !== 'slot') {
         existing.path = options.path;
       }
+      applyAutoAcquire(existing, options.autoAcquire);
       return existing;
     }
 
@@ -46,6 +49,7 @@ export class ResourceCatalog {
       await this.registryScribe.discoverSlotResources(registry);
       const discovered = this.registryScribe.getResource(registry, options.resourceType, options.resourceId);
       if (discovered) {
+        applyAutoAcquire(discovered, options.autoAcquire);
         return discovered;
       }
 
@@ -55,6 +59,26 @@ export class ResourceCatalog {
       });
     }
 
-    return this.registryScribe.upsertResource(registry, options.resourceType, options.resourceId, options.path ?? null);
+    const created = this.registryScribe.upsertResource(
+      registry,
+      options.resourceType,
+      options.resourceId,
+      options.path ?? null
+    );
+    applyAutoAcquire(created, options.autoAcquire);
+    return created;
+  }
+}
+
+// `true` is the default, so only the opt-out is persisted; this keeps registries of workspaces
+// that never pin a slot byte-identical.
+function applyAutoAcquire(resource: RegistryResource, autoAcquire: boolean | undefined): void {
+  if (autoAcquire === undefined) {
+    return;
+  }
+  if (autoAcquire) {
+    delete resource.auto_acquire;
+  } else {
+    resource.auto_acquire = false;
   }
 }

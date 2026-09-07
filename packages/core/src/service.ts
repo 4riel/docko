@@ -1,5 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
+import {
+  CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS,
+  CLAIM_WRITE_HEARTBEAT_THROTTLE_MS,
+  DEFAULT_ENDED_SESSION_RETENTION_MS,
+  JANITOR_MAX_DELETED_MANIFESTS_PER_PASS,
+  JANITOR_MAX_ENDED_SESSIONS_PER_PASS
+} from './constants.js';
 import { DockoError, assertSafeId, toErrorPayload } from './errors.js';
 import { listDirectories } from './fs-utils.js';
 import { LogScribe } from './log-scribe.js';
@@ -31,9 +38,43 @@ import type {
   StatusResult
 } from './types.js';
 
+// Newest active sessions reported when session resolution is ambiguous.
+const AMBIGUOUS_SESSION_CANDIDATES = 10;
+
+/**
+ * How long the authorized-write path may skip refreshing a claim's heartbeat.
+ * The throttle has to stay well inside the claim's own stale window: with a fixed 30 s window a
+ * claim configured to expire after 3 s went stale between two authorized writes. A quarter of
+ * the window gives several refreshes before the janitor would reclaim it.
+ */
+export function claimHeartbeatThrottleMs(staleAfterMs: number | null | undefined): number {
+  if (typeof staleAfterMs !== 'number' || !Number.isFinite(staleAfterMs) || staleAfterMs <= 0) {
+    return CLAIM_WRITE_HEARTBEAT_THROTTLE_MS;
+  }
+
+  return Math.min(
+    CLAIM_WRITE_HEARTBEAT_THROTTLE_MS,
+    Math.max(CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS, Math.floor(staleAfterMs / 4))
+  );
+}
+
 interface JanitorPassOptions {
   // Overrides the workspace session stale window for a single janitor pass.
   sessionStaleAfterMs?: number;
+  // Regenerate registry.md even when the registry document itself did not change.
+  forceMirror?: boolean;
+  // Drain every legacy ended manifest instead of the capped opportunistic batch. Only the
+  // explicit reclaim path (`session prune`) asks for this; a backlog of thousands would
+  // otherwise need one command per 100 manifests.
+  drainEndedManifests?: boolean;
+}
+
+interface JanitorPassResult {
+  released_claims: RegistryResource[];
+  ended_sessions: SessionManifest[];
+  ended_sessions_truncated: boolean;
+  deleted_manifests: number;
+  active_sessions: SessionManifest[];
 }
 
 export class DockoService {
@@ -48,9 +89,14 @@ export class DockoService {
   private readonly mutationGate: MutationGate;
   private readonly resourceCatalog: ResourceCatalog;
   private readonly logScribe: LogScribe;
+  private endedManifestsSwept = false;
 
   constructor(workspaceRoot: string) {
-    this.registryScribe = new RegistryScribe(workspaceRoot);
+    this.registryScribe = new RegistryScribe(workspaceRoot, {
+      onMirrorError: (error: unknown) => {
+        void this.recordMirrorFailure(error);
+      }
+    });
     this.sessionSherpa = new SessionSherpa(workspaceRoot);
     this.lockBouncer = new LockBouncer(workspaceRoot);
     this.mutationGate = new MutationGate(this.registryScribe.getPaths().lockDir);
@@ -135,12 +181,20 @@ export class DockoService {
     }
 
     if (resolution.source === 'ambiguous') {
+      // The candidate list is capped: a long-lived workspace can hold dozens of active
+      // sessions and an agent only ever needs the newest few.
+      const newest = [...resolution.activeSessions].sort((left, right) =>
+        right.updated_at.localeCompare(left.updated_at)
+      );
+      const newestInteractive = newest.find((session) => session.actor_mode === 'interactive') ?? newest[0];
+
       throw new DockoError(
         'Multiple active sessions found. Retry with an explicit --session value.',
         'AMBIGUOUS_SESSION',
         3,
         {
-          active_sessions: resolution.activeSessions.map((session) => ({
+          active_session_count: resolution.activeSessions.length,
+          active_sessions: newest.slice(0, AMBIGUOUS_SESSION_CANDIDATES).map((session) => ({
             session_id: session.session_id,
             runtime: session.runtime,
             actor_mode: session.actor_mode,
@@ -149,6 +203,7 @@ export class DockoService {
             started_at: session.started_at,
             updated_at: session.updated_at
           })),
+          newest_session_id: newestInteractive?.session_id ?? null,
           next_steps: [
             'Retry the command with --session <id>.',
             'Use `docko session list --brief` to inspect active sessions.',
@@ -162,13 +217,24 @@ export class DockoService {
       );
     }
 
-    throw new DockoError('No active session found.', 'NO_ACTIVE_SESSION', 4);
+    throw new DockoError('No active session found.', 'NO_ACTIVE_SESSION', 4, {
+      active_session_count: 0,
+      resolution: {
+        explicit_session_id: explicitSessionId ?? null,
+        env_session_id: envSessionId ?? null
+      }
+    });
   }
 
   async sessionCurrent(sessionId: string): Promise<SessionManifest> {
     return this.withLoggedOperation(
       'session.current',
-      () => this.sessionSherpa.touch(sessionId),
+      async () => {
+        // An ended session is never "current": returning it would hand the caller an id no
+        // write hook accepts, and touching it would restart its retention clock.
+        await this.requireActiveSession(sessionId);
+        return this.sessionSherpa.touch(sessionId);
+      },
       (session) => ({
         runtime: session.runtime,
         actor_mode: session.actor_mode
@@ -197,32 +263,43 @@ export class DockoService {
    * operator can clear a backlog immediately or preview it with dryRun.
    */
   async sessionPrune(options: SessionPruneOptions = {}): Promise<SessionPruneResult> {
+    const retentionMs = options.deleteEndedOlderThanMs ?? DEFAULT_ENDED_SESSION_RETENTION_MS;
+
     return this.withLoggedOperation(
       'session.prune',
       async () => {
         if (options.dryRun) {
-          return this.previewStaleSessions(options.maxAgeMs);
+          return this.previewStaleSessions(options.maxAgeMs, retentionMs);
         }
 
         return this.mutateRegistry(
-          async (registry, _releasedStaleClaims, endedStaleSessions) =>
-            this.buildSessionPruneResult(
-              endedStaleSessions,
+          async (registry, janitor) => {
+            // Prune is the explicit reclaim path: it deletes ended manifests past retention
+            // even when the janitor already ran its capped opportunistic sweep.
+            const deletedManifests = await this.sessionSherpa.deleteEndedOlderThan(retentionMs);
+            return this.buildSessionPruneResult(
+              janitor.ended_sessions,
               options.maxAgeMs ?? this.staleJanitor.defaultSessionStaleAfter(registry),
-              false
-            ),
-          { sessionStaleAfterMs: options.maxAgeMs }
+              false,
+              retentionMs,
+              janitor.deleted_manifests + deletedManifests
+            );
+          },
+          { sessionStaleAfterMs: options.maxAgeMs, drainEndedManifests: true }
         );
       },
       (result) => ({
         dry_run: result.dry_run,
         max_age_ms: result.max_age_ms,
-        pruned_session_count: result.pruned_session_count
+        pruned_session_count: result.pruned_session_count,
+        retention_ms: result.retention_ms,
+        deleted_manifests: result.deleted_manifests
       }),
       {
         details: {
           max_age_ms: options.maxAgeMs ?? null,
-          dry_run: options.dryRun ?? false
+          dry_run: options.dryRun ?? false,
+          retention_ms: retentionMs
         }
       }
     );
@@ -232,12 +309,14 @@ export class DockoService {
     return this.withLoggedOperation(
       'status',
       () =>
-        this.mutateRegistry(async (registry, releasedStaleClaims, endedStaleSessions) => {
+        this.mutateRegistry(async (registry, janitor) => {
           return {
             ...this.registryScribe.buildStatus(registry, resourceType, resourceId),
             janitor: {
-              released_claims: releasedStaleClaims,
-              ended_sessions: endedStaleSessions
+              released_claims: janitor.released_claims,
+              ended_sessions: janitor.ended_sessions,
+              ended_sessions_truncated: janitor.ended_sessions_truncated,
+              deleted_manifests: janitor.deleted_manifests
             }
           };
         }),
@@ -264,19 +343,22 @@ export class DockoService {
             registry,
             options.resourceType,
             options.resourceId,
-            options.path
+            options.path,
+            options.autoAcquire
           );
           return resource;
         }),
       (resource) => ({
         status: resource.status,
-        path: resource.path ?? null
+        path: resource.path ?? null,
+        auto_acquire: resource.auto_acquire ?? true
       }),
       {
         resource_type: options.resourceType,
         resource_id: options.resourceId,
         details: {
-          path: options.path ?? null
+          path: options.path ?? null,
+          auto_acquire: options.autoAcquire ?? null
         }
       }
     );
@@ -413,11 +495,12 @@ export class DockoService {
         return this.mutateRegistry(async (registry) => {
           const resource = this.mustGetResource(registry, options.resourceType, options.resourceId);
           this.lockBouncer.requireOwner(resource, options.sessionId, options.force ?? false);
+          const releaseReason = options.reason ?? (options.force ? 'force-release' : 'manual');
           const released = this.snapshotResource(resource);
-          this.clearClaim(resource);
+          this.clearClaim(resource, releaseReason);
 
           if (released.claim) {
-            released.claim.release_reason = options.reason ?? (options.force ? 'force-release' : 'manual');
+            released.claim.release_reason = releaseReason;
           }
           return released;
         });
@@ -470,17 +553,49 @@ export class DockoService {
   }
 
   async render(): Promise<void> {
-    await this.withLoggedOperation('render', () => this.mutateRegistry(async () => undefined));
+    await this.withLoggedOperation('render', () => this.mutateRegistry(async () => undefined, { forceMirror: true }));
   }
 
+  /**
+   * Answers a PreToolUse-style write check.
+   * Paths outside every managed slot are answered from an unlocked registry read: no lock,
+   * no session touch, no writes. Only slot paths take the mutation path, where the answer
+   * genuinely depends on fresh claim state.
+   */
   async authorizeFileWrite(sessionId: string, relativeFilePath: string): Promise<AuthorizationResult> {
+    const snapshot = await this.registryScribe.readRegistryUnlocked();
+    // A slot directory created on disk since the last mutation only becomes a registry resource
+    // during slot discovery, which runs on the locked path. Anything under slots/ therefore has
+    // to take the locked path even when nothing matches, or a fresh slot would be writable by
+    // every session.
+    if (
+      snapshot &&
+      !this.lockBouncer.findManagedSlot(snapshot, relativeFilePath) &&
+      !this.lockBouncer.isInsideSlotsTree(relativeFilePath)
+    ) {
+      return this.lockBouncer.authorizeFileWrite(snapshot, sessionId, relativeFilePath);
+    }
+
     return this.withLoggedOperation(
       'authorize-file-write',
       async () => {
-        await this.requireActiveSession(sessionId);
-        await this.touchSessionActivity(sessionId);
-        return this.mutateRegistry(async (registry) => {
-          return this.lockBouncer.authorizeFileWrite(registry, sessionId, relativeFilePath);
+        // An unregistered or ended session is not an error here. The hook still has to get an
+        // answer, and the honest one is a session that owns nothing: throwing SESSION_NOT_FOUND
+        // made the launcher fail open and allowed the write it was meant to block.
+        const session = await this.sessionSherpa.get(sessionId);
+        const sessionKnown = Boolean(session && !session.ended_at);
+
+        return this.mutateRegistry(async (registry, janitor) => {
+          const sessions = new Map(janitor.active_sessions.map((session) => [session.session_id, session]));
+          const authorization = this.lockBouncer.authorizeFileWrite(registry, sessionId, relativeFilePath, {
+            sessions,
+            sessionKnown,
+            ignoredSlotDirs: this.registryScribe.getIgnoredSlotDirs()
+          });
+          if (sessionKnown && authorization.allowed && authorization.resource_id) {
+            await this.refreshClaimLiveness(registry, authorization, sessionId);
+          }
+          return authorization;
         });
       },
       (authorization) => ({
@@ -496,6 +611,31 @@ export class DockoService {
         }
       }
     );
+  }
+
+  /**
+   * Keeps an actively-worked claim alive without rewriting state on every edit.
+   * Throttled so an Edit-heavy session costs at most one refresh per window.
+   */
+  private async refreshClaimLiveness(
+    registry: RegistryDocument,
+    authorization: AuthorizationResult,
+    sessionId: string
+  ): Promise<void> {
+    const resource = registry.resources.find(
+      (candidate) => candidate.resource_type === 'slot' && candidate.resource_id === authorization.resource_id
+    );
+    if (!resource?.claim) {
+      return;
+    }
+
+    const lastBeat = new Date(resource.claim.heartbeat_at ?? resource.claim.updated_at).getTime();
+    if (!Number.isNaN(lastBeat) && Date.now() - lastBeat < claimHeartbeatThrottleMs(resource.claim.stale_after_ms)) {
+      return;
+    }
+
+    this.touchClaim(resource);
+    await this.touchSessionActivity(sessionId);
   }
 
   async inheritDelegationsFromParent(parentSessionId: string, childSessionId: string): Promise<void> {
@@ -537,39 +677,74 @@ export class DockoService {
 
   private async loadRegistryForMutation(options: JanitorPassOptions = {}): Promise<{
     registry: RegistryDocument;
-    releasedStaleClaims: RegistryResource[];
-    endedStaleSessions: SessionManifest[];
+    serialized: string;
+    janitor: JanitorPassResult;
   }> {
     const registry = await this.registryScribe.ensureRegistry();
+    const serialized = this.registryScribe.serialize(registry);
     await this.registryScribe.discoverSlotResources(registry);
-    const sessions = await this.sessionSherpa.listByFiles();
+    // Legacy workspaces still keep ended manifests in the hot directory; move them lazily.
+    await this.sessionSherpa.relocateEndedManifests(
+      options.drainEndedManifests ? Number.POSITIVE_INFINITY : JANITOR_MAX_ENDED_SESSIONS_PER_PASS
+    );
+    const sessions = await this.sessionSherpa.listActive();
     const now = new Date();
     // Stale cleanup happens on the shared mutation path so reads and writes converge on one view.
     const staleResources = this.staleJanitor.releaseStaleClaims(registry, { now, sessions });
     await Promise.all(staleResources.map((resource) => this.recordStaleRecovery(resource)));
     // Sessions are swept after claims so a just-recovered claim no longer protects its abandoning session.
-    const endedStaleSessions = await this.endStaleSessions(registry, sessions, now, options.sessionStaleAfterMs);
+    const { endedSessions, truncated } = await this.endStaleSessions(
+      registry,
+      sessions,
+      now,
+      options.sessionStaleAfterMs
+    );
+    const deletedManifests = await this.sweepEndedManifestsOnce();
+
     return {
       registry,
-      releasedStaleClaims: staleResources,
-      endedStaleSessions
+      serialized,
+      janitor: {
+        released_claims: staleResources,
+        ended_sessions: endedSessions,
+        ended_sessions_truncated: truncated,
+        deleted_manifests: deletedManifests,
+        active_sessions: sessions.filter((session) => !session.ended_at)
+      }
     };
   }
 
   private async mutateRegistry<T>(
-    operation: (
-      registry: RegistryDocument,
-      releasedStaleClaims: RegistryResource[],
-      endedStaleSessions: SessionManifest[]
-    ) => Promise<T>,
+    operation: (registry: RegistryDocument, janitor: JanitorPassResult) => Promise<T>,
     options: JanitorPassOptions = {}
   ): Promise<T> {
     return this.withMutationLock(async () => {
-      const { registry, releasedStaleClaims, endedStaleSessions } = await this.loadRegistryForMutation(options);
-      const result = await operation(registry, releasedStaleClaims, endedStaleSessions);
-      await this.registryScribe.writeRegistry(registry);
+      const { registry, serialized, janitor } = await this.loadRegistryForMutation(options);
+      const result = await operation(registry, janitor);
+      // A long operation can outlive the stale window on a machine that was suspended mid-run.
+      // Re-checking here turns "two processes wrote the registry" into a retriable error.
+      await this.mutationGate.assertStillHeld();
+      await this.registryScribe.writeRegistryIfChanged(registry, serialized, {
+        forceMirror: options.forceMirror
+      });
       return result;
     });
+  }
+
+  /**
+   * Deletes ended manifests past the retention window.
+   * Once per service instance keeps the sweep off the per-command hot path.
+   */
+  private async sweepEndedManifestsOnce(): Promise<number> {
+    if (this.endedManifestsSwept) {
+      return 0;
+    }
+
+    this.endedManifestsSwept = true;
+    return this.sessionSherpa.deleteEndedOlderThan(
+      DEFAULT_ENDED_SESSION_RETENTION_MS,
+      JANITOR_MAX_DELETED_MANIFESTS_PER_PASS
+    );
   }
 
   private async endStaleSessions(
@@ -577,7 +752,7 @@ export class DockoService {
     sessions: SessionManifest[],
     now: Date,
     staleAfterMs?: number
-  ): Promise<SessionManifest[]> {
+  ): Promise<{ endedSessions: SessionManifest[]; truncated: boolean }> {
     const sessionStaleAfterMs = staleAfterMs ?? this.staleJanitor.defaultSessionStaleAfter(registry);
     const staleSessions = this.staleJanitor.collectStaleSessions(registry, {
       now,
@@ -585,8 +760,10 @@ export class DockoService {
       staleAfterMs: sessionStaleAfterMs
     });
 
+    // One command must never turn into a multi-minute sweep while holding the lock.
+    const batch = staleSessions.slice(0, JANITOR_MAX_ENDED_SESSIONS_PER_PASS);
     const endedSessions: SessionManifest[] = [];
-    for (const session of staleSessions) {
+    for (const session of batch) {
       const lastActivityAt = session.updated_at;
       const endedSession = await this.sessionSherpa.end(session.session_id);
       if (!endedSession) {
@@ -600,22 +777,33 @@ export class DockoService {
       await this.recordStaleSessionRecovery(endedSession, sessionStaleAfterMs, lastActivityAt);
     }
 
-    return endedSessions;
+    return {
+      endedSessions,
+      truncated: staleSessions.length > batch.length
+    };
   }
 
-  private buildSessionPruneResult(sessions: SessionManifest[], maxAgeMs: number, dryRun: boolean): SessionPruneResult {
+  private buildSessionPruneResult(
+    sessions: SessionManifest[],
+    maxAgeMs: number,
+    dryRun: boolean,
+    retentionMs: number,
+    deletedManifests: number
+  ): SessionPruneResult {
     return {
       dry_run: dryRun,
       max_age_ms: maxAgeMs,
       pruned_session_count: sessions.length,
-      pruned_sessions: sessions
+      pruned_sessions: sessions,
+      retention_ms: retentionMs,
+      deleted_manifests: deletedManifests
     };
   }
 
-  private async previewStaleSessions(maxAgeMs?: number): Promise<SessionPruneResult> {
+  private async previewStaleSessions(maxAgeMs: number | undefined, retentionMs: number): Promise<SessionPruneResult> {
     return this.withMutationLock(async () => {
       const registry = await this.registryScribe.ensureRegistry();
-      const sessions = await this.sessionSherpa.listByFiles();
+      const sessions = await this.sessionSherpa.listActive();
       const now = new Date();
       // Preview against a copy: claims the janitor would recover must not protect their owners here,
       // and a dry run may not touch the registry on disk.
@@ -628,7 +816,8 @@ export class DockoService {
         staleAfterMs
       });
 
-      return this.buildSessionPruneResult(candidates, staleAfterMs, true);
+      const deletableManifests = await this.sessionSherpa.countEndedOlderThan(retentionMs);
+      return this.buildSessionPruneResult(candidates, staleAfterMs, true, retentionMs, deletableManifests);
     });
   }
 
@@ -659,14 +848,16 @@ export class DockoService {
     registry: RegistryDocument,
     resourceType: string,
     resourceId: string,
-    resourcePath?: string | null
+    resourcePath?: string | null,
+    autoAcquire?: boolean
   ): Promise<RegistryResource> {
     assertSafeId(resourceType, 'resource_type');
     assertSafeId(resourceId, 'resource_id');
     return this.resourceCatalog.ensure(registry, {
       resourceType,
       resourceId,
-      path: resourcePath
+      path: resourcePath,
+      autoAcquire
     });
   }
 
@@ -724,7 +915,19 @@ export class DockoService {
     };
   }
 
-  private clearClaim(resource: RegistryResource): void {
+  private clearClaim(resource: RegistryResource, reason: string): void {
+    if (resource.claim) {
+      // Remember who held the slot last so a later denial can explain why it is free now.
+      resource.last_claim = {
+        owner_session_id: resource.claim.owner_session_id,
+        released_at: new Date().toISOString(),
+        reason,
+        branch: resource.claim.branch ?? null,
+        task: resource.claim.task ?? null,
+        stale_after_ms: resource.claim.stale_after_ms ?? null
+      };
+    }
+
     resource.status = 'free';
     resource.claim = null;
     resource.delegations = [];
@@ -759,7 +962,7 @@ export class DockoService {
         continue;
       }
 
-      this.clearClaim(resource);
+      this.clearClaim(resource, 'session-end');
       released += 1;
     }
 
@@ -808,6 +1011,17 @@ export class DockoService {
       });
       throw error;
     }
+  }
+
+  private async recordMirrorFailure(error: unknown): Promise<void> {
+    await this.recordLog({
+      operation: 'mirror-render',
+      outcome: 'error',
+      session_id: null,
+      resource_type: null,
+      resource_id: null,
+      details: toErrorPayload(error)
+    });
   }
 
   private async recordStaleRecovery(resource: RegistryResource): Promise<void> {

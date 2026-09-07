@@ -4,6 +4,8 @@
 docko/
 |-- AGENTS.md
 |-- CLAUDE.md
+|-- .claude-plugin/
+|   `-- marketplace.json
 |-- .github/
 |-- .husky/
 |-- .agents/
@@ -14,6 +16,8 @@ docko/
 |   |-- cli/
 |   `-- adapters/
 |       `-- claude-code/
+|           |-- plugin/       (distributable Claude Code plugin bundle)
+|           `-- templates/    (CLAUDE.md and AGENTS.md snippets)
 |-- schemas/
 |-- tests/
 |-- examples/
@@ -31,6 +35,7 @@ docko/
 - `CLAUDE.md`: repo-root operating rules for Claude Code working in this repository
 - `.github/`: CI, security scanning, issue templates, ownership, and pull request defaults
 - `.husky/`: lightweight commit and pre-commit hooks
+- `.claude-plugin/marketplace.json`: makes this repository a Claude Code plugin marketplace
 - `.agents/skills/`: repo-local skills for repo navigation, protocol work, adapters, and docs sync
 - `docs/`: product framing, protocol reference, architecture, CLI reference, adapter docs, and contributor guidance
 - `packages/core/`: runtime-agnostic protocol semantics, registry persistence, session manifests, stale cleanup, delegation, authorization, and mirror/log services

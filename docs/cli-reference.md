@@ -12,10 +12,18 @@ CLI command: `docko`
 - Use `docko --help` for the command list.
 - Use `docko --version` for the package version.
 - All commands accept `--root <path>`. If omitted, docko uses `DOCKO_ROOT` or the current working directory.
-- Root resolution walks up like git: when the starting point (cwd or an implicit `DOCKO_ROOT`) sits inside a workspace but below its root, docko resolves up to the nearest ancestor that owns `docko/registry.json` instead of fragmenting state into a slot. `init` is exempt — it always scaffolds at the given location.
-- An explicit `--root` that points inside a managed `slots/` directory is refused with the `ROOT_INSIDE_SLOT` error rather than leaking a registry into the slot; run against the workspace root instead.
-- Session-aware commands also accept `--session <id>`. If omitted, docko tries `DOCKO_SESSION_ID`, then auto-resolution from active sessions.
-- Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, `session list`, and `session prune`.
+- Root resolution walks up like git: when the starting point (cwd, `--root`, or `DOCKO_ROOT`) sits inside a workspace but below its root, docko resolves up to the nearest ancestor that owns `docko/registry.json` instead of fragmenting state into a slot. `--root .` from inside a slot therefore works and reports the resolved root as `resolved_root`.
+- Scaffolding commands are the exception: `init` and `adapter claude-code install` act on the directory they were pointed at and never resolve up.
+  - Both refuse a directory that sits inside another workspace's `slots/` tree with `ROOT_INSIDE_SLOT` (exit 1), whether or not `--root` was passed.
+  - `adapter claude-code install` additionally refuses a non-workspace directory inside another workspace with `ROOT_NOT_WORKSPACE` (exit 1), so it never scatters Claude Code assets into a parent project. Pass `--root <workspace_root>` explicitly to install there.
+  - `init` allows the second case: a nested workspace outside `slots/` is legitimate.
+  - Both errors report `provided_root` and `workspace_root`.
+- `--help` and `--version` are answered before any root resolution, so `docko init --root <slot> --help` prints usage rather than failing.
+- `docko slot --help`, `docko session --help`, and `docko adapter --help` print that namespace's subcommands; `docko <command> --help` prints that command's usage.
+- Session-aware commands also accept `--session <id>`. If omitted, docko tries `DOCKO_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID`, then auto-resolution from active sessions. An env id that matches no active session is ignored rather than failing.
+- When session resolution is ambiguous, the error carries `active_session_count`, the newest active sessions, `newest_session_id`, and `suggested_command`: the command you just ran, re-rendered with `--session` filled in.
+- Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, `session list`, `session prune`, and `release`.
+- Every command accepts `--help` and prints usage for that command: `docko slot acquire --help`.
 - `docko --help` and `docko --version` print plain text.
 - Success payloads are JSON on stdout.
 - Fatal errors are JSON on stderr with a non-zero exit code.
@@ -58,7 +66,7 @@ Useful options:
 - `--mode auto|workspace|repo`: choose scaffolding mode. `auto` is the default.
 - `--slot <id>`: create starter slot directories. Repeatable. Duplicate values are de-duplicated.
 - `--slot-stale-after-ms <n>`: store the default slot stale timeout in `workspace.config.janitor.slot_stale_after_ms`.
-- `--session-stale-after-ms <n>`: store the session stale timeout in `workspace.config.janitor.session_stale_after_ms`. Workspaces without it use `86400000`.
+- `--session-stale-after-ms <n>`: store the session stale timeout in `workspace.config.janitor.session_stale_after_ms`. Workspaces without it use `28800000` (8 hours).
 - `--claude`: install Claude Code assets during init.
 - `--codex`: prepare Codex onboarding guidance during init.
 - `--inject-claude`: inject the managed docko block into `CLAUDE.md`.
@@ -135,8 +143,9 @@ docko slot acquire --root ./workspace --session leader --application backend --b
 
 Options:
 
-- `--application <id>` restricts acquisition to one application slot pool.
-- `--branch <name>` and `--task <text>` record operator context in the resulting claim.
+- `--application <id>` restricts acquisition to one application slot pool. docko never hands back a slot from a different application than the one requested.
+- `--prefer <slot-id>` takes that slot when it is free and falls back to normal round-robin when it is not. An unknown id fails with `PREFERRED_SLOT_NOT_FOUND`. `--prefer` also reaches slots that are pinned out of rotation.
+- `--branch <name>` and `--task <text>` record operator context in the resulting claim. `branch` is metadata only: docko never runs `git checkout`.
 - `--runtime <name>` overrides the runtime stored on the claim.
 - `--stale-after-ms <n>` overrides the stale timeout for the resulting claim.
 - `--clone-when-busy` duplicates and claims a fresh managed slot when none are free.
@@ -147,7 +156,8 @@ Options:
 
 Notes:
 
-- Successful output always includes the claimed slot and availability counts from before the claim.
+- Successful output always includes the claimed slot, `resolved_root`, and availability counts from before the claim: `total_slots`, `free_slots_before` (slots rotation could take), `claimed_slots_before` (slots actually held by a session), and `pinned_slot_count`. A pinned slot is out of rotation, not busy, so it is never counted as claimed. `NO_FREE_SLOT` reports the same split as `busy_slot_count`, `pinned_slot_count`, and `pinned_slot_ids`.
+- Slots whose registry entry sets `auto_acquire: false` are skipped by automatic selection. They stay claimable by name with `docko claim` or `--prefer`.
 - When applications are configured, `docko` can infer the right application from keywords in `--task` or `--branch` text.
 - When docko creates a new clone, the payload includes `clone.size_bytes` and `clone.size_mb`.
 - `claim` remains the explicit low-level command when you already know the exact slot id you want.
@@ -185,9 +195,12 @@ Notes:
 
 - Use `--resource <type>` and `--id <id>` to narrow the result set.
 - Use `--application <id>` to view only one application slot pool.
+- Use `--claimed` to list only claimed resources instead of hand-filtering the full array.
 - Use `--brief` when an agent or script only needs slot counts, compact resource rows, and janitor release counts.
-- If stale claims were released during the read, they appear under `janitor.released_claims`.
+- Every status payload carries `resolved_root` and a `summary` block: per-application free/claimed counts, `my_claims` for the resolved session (empty when the session cannot be resolved), and `stale_candidates` — claims quiet for more than half their stale window, with the owner's `last_heartbeat_at` and `age_ms`.
+- If stale claims were released during the read, they appear under `janitor.released_claims`. `--brief` also reports `janitor_ended_sessions_truncated` and `janitor_deleted_manifests`.
 - Free slot resources deleted from `slots/` are dropped from the returned registry state.
+- `ignored_slot_dirs` (full and `--brief`) lists directories under `slots/` whose name is not a valid resource id — a space, a leading `-`, or a `..` segment. They own no resource and can never be claimed, and writes into them are denied until the directory is renamed.
 
 ## `docko logs`
 
@@ -253,8 +266,10 @@ Options:
 
 Notes:
 
-- Normal release is owner-only.
-- Forced release records `force-release` as the claim release reason.
+- Normal release is owner-only. A non-owner release fails with `RESOURCE_OWNED_BY_OTHER_SESSION`, and the error carries a `suggested_command` that adds `--force`.
+- Releasing a resource that is already free fails with `RESOURCE_NOT_CLAIMED` and says so explicitly, including under `--brief`; the janitor or a session end may have released it first.
+- Forced release records `force-release` as the claim release reason and reports `forced_by_session_id` alongside `previous_owner_session_id`.
+- Successful output also reports `released_by_session_id`. `--brief` returns the compact form.
 
 ## `docko delegate`
 
@@ -282,12 +297,19 @@ Registers or updates a non-slot resource such as a shared environment.
 
 ```text
 docko resource ensure --root ./workspace --resource shared-env --id staging --path shared/staging
+docko resource ensure --root ./workspace --resource slot --id backend.libs --no-auto-acquire
 ```
+
+Options:
+
+- `--path <path>` sets the managed path for a non-slot resource.
+- `--no-auto-acquire` / `--auto-acquire` pin a resource out of, or back into, `slot acquire` rotation. A pinned resource stays claimable by name (`docko claim`, `slot acquire --prefer`).
 
 Notes:
 
-- Slot resources are discovered from `slots/`; do not use `resource ensure` for slots.
+- Slot resources are discovered from `slots/`; do not use `resource ensure` to create them.
 - Updating the path of a claimed resource is denied.
+- When `--no-auto-acquire`/`--auto-acquire` is passed, the payload always spells out the effective `auto_acquire` value. The opt-out survives slot rediscovery; `true` is the default and is not written to the registry.
 
 ## `docko render`
 
@@ -352,13 +374,20 @@ Lists active sessions only.
 
 ```text
 docko session list --root ./workspace
+docko session list --root ./workspace --limit 5
 docko session list --root ./workspace --brief
 ```
+
+Options:
+
+- `--limit <n>` returns only the newest `n` sessions. Default: 20.
 
 Notes:
 
 - Ended sessions are excluded.
-- `--brief` returns `active_session_count` plus compact active session rows for recovery from `AMBIGUOUS_SESSION`.
+- Sessions come back newest first, so the first row is usually the one you want.
+- `active_session_count` is the full count; `returned_session_count` reflects `--limit`.
+- `--brief` returns those counts plus compact active session rows for recovery from `AMBIGUOUS_SESSION`.
 
 ## `docko session prune`
 
@@ -368,18 +397,22 @@ Ends sessions that have gone quiet for longer than the session stale window.
 docko session prune --root ./workspace --dry-run
 docko session prune --root ./workspace
 docko session prune --root ./workspace --max-age-ms 3600000 --brief
+docko session prune --root ./workspace --retention-ms 86400000
 ```
 
 Options:
 
-- `--max-age-ms <n>` overrides `workspace.config.janitor.session_stale_after_ms` for this run only.
+- `--max-age-ms <n>` overrides `workspace.config.janitor.session_stale_after_ms` for this run only. `0` means "now".
+- `--retention-ms <n>` deletes ended session manifests older than this window. Default: `604800000` (7 days). `0` means "now". Alias: `--delete-ended-older-than-ms`.
 - `--dry-run` reports what would be ended without writing anything.
 
 Notes:
 
 - The janitor already runs this sweep on every registry mutation, including `docko status`. Use this command to clear an existing backlog immediately or to preview one.
 - A session that still owns, or is delegated, a live claim is never ended.
-- Ended sessions keep their manifest files; `docko session list` stops reporting them.
+- Ending a session moves its manifest to `docko/sessions/ended/`, so the hot path only ever reads live sessions.
+- The result reports `retention_ms` and `deleted_manifests` alongside the ended sessions.
+- A non-dry run also drains every legacy ended manifest still sitting in `docko/sessions/` in one pass. The opportunistic janitor moves at most 100 per mutation, so a workspace with a large backlog only needs one `session prune`.
 
 ## `docko adapter claude-code install`
 
@@ -392,13 +425,43 @@ docko adapter claude-code install --root ./workspace --dest .claude-plugin/docko
 
 Options:
 
-- `--dest <path>` overrides the plugin destination.
+- `--dest <path>` overrides the plugin destination. The generated hook command follows it.
 - `--write-settings-local` writes merged hook config into `.claude/settings.local.json`.
 - `--force` overwrites managed Claude files.
 
 Notes:
 
 - Use this when you want the adapter install without running full `init --claude`.
+- The install acts on `--root` exactly and never resolves up to an owning workspace. A directory inside another workspace's `slots/` tree fails with `ROOT_INSIDE_SLOT`; a non-workspace directory inside another workspace fails with `ROOT_NOT_WORKSPACE`. Both report `provided_root` and `workspace_root` and name the explicit `--root` to use instead.
+- Generated machine state — `<dest>/plugin.json`, `<dest>/hooks/hooks.json`, and `.claude/settings.docko.json` — is rewritten on every install so it always matches the installed docko version. It is reported under `written_files` only when its content actually changed.
+- The hook launcher carries a `// docko-launcher-version:` header and is refreshed whenever the installed version differs from the shipped one, with or without `--force`. Commands, skills, and template snippets are still preserved unless `--force` is passed.
+- `--dest` must resolve inside the workspace root. A path that escapes it (`--dest ../outside`) fails with `USAGE_ERROR` rather than scattering hooks and a launcher into an unrelated project.
+- Committed hook config (`.claude/settings.docko.json` and `<dest>/hooks/hooks.json`) stays portable by anchoring on `$CLAUDE_PROJECT_DIR` and `${CLAUDE_PLUGIN_ROOT}`. Only the machine-local `.claude/settings.local.json` written by `--write-settings-local` uses the absolute launcher path, so it resolves from any working directory and any shell.
+- Re-installing an unchanged file reports it under `unchanged_files` rather than `written_files`.
+- Merging into `.claude/settings.local.json` replaces any previous docko registration for an event instead of appending a second one.
+
+## `docko adapter claude-code doctor`
+
+Diagnoses a repo-local Claude Code install.
+
+```text
+docko adapter claude-code doctor --root ./workspace
+docko adapter claude-code doctor --root ./workspace --fix
+```
+
+Options:
+
+- `--dest <path>` inspects a non-default plugin destination.
+- `--fix` removes docko hook registrations that point at a launcher which does not exist or is out of date, and collapses duplicate registrations down to the first healthy one. Duplicates are judged per event *and* matcher: two `PreToolUse` entries matching `Edit|Write` are duplicates, while `Edit|Write` and `NotebookEdit` are two deliberate hooks and both survive. After fixing, the diagnosis is re-run, so `issues` and `ok` describe the install as it is now; `fixed` lists what changed.
+
+Reports:
+
+- `launcher`: installed path, version header, and whether it matches the shipped version.
+- `plugin_manifest`: the generated `<dest>/plugin.json`, its version, and whether it matches the installed docko version. Drift here means the install predates the docko on PATH; re-run `install`.
+- `settings_files`: docko hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, with duplicate and stale counts. Duplicate issues name the event and the matcher they were found under. Entries anchored on `${CLAUDE_PLUGIN_ROOT}` belong to the installed plugin and are left alone.
+- `docko_binary`: `DOCKO_BIN`, the resolved PATH entry, and the `npx` fallback used when neither is available.
+- `session`: `DOCKO_SESSION_ID` and `CLAUDE_CODE_SESSION_ID` as this shell sees them.
+- `issues` with `fixable` flags, `fixed` for what `--fix` changed, and `ok`.
 
 ## `docko adapter claude-code settings`
 
@@ -420,6 +483,8 @@ Notes:
 
 - The runtime is always `claude-code`.
 - In real hook usage, Claude may also pass `session_id` on stdin JSON.
+- `additionalContext` states the session id, the resolved workspace root, and the acquire/claim/release commands with `--session` already filled in.
+- `env` carries `DOCKO_SESSION_ID` and `DOCKO_RUNTIME`. The plugin's hook launcher appends those (plus `DOCKO_ROOT`) to `$CLAUDE_ENV_FILE`, so later Bash tool calls in the same session inherit them.
 
 ## `docko adapter claude-code session-end`
 
@@ -445,8 +510,9 @@ docko adapter claude-code pre-tool-use --root ./workspace --session leader
 Notes:
 
 - Real hook usage passes the pending file path on stdin JSON as `file_path` or `tool_input.file_path`.
-- The response shape is `{ allow, reason, session_id, resource_id, owner_session_id }`.
-- Writes outside managed slots return `allow: true`.
+- The response carries `allow`, `reason`, `session_id`, `resource_id`, `owner_session_id`, `workspace_root`, and, when the answer depends on a claim, `owner_task`, `owner_branch`, `owner_session_active`, `expired_at`, `claim_stale_after_ms`, and `previous_owner_session_id`.
+- `reason` is one of `path-not-managed`, `owner`, `delegated` (allowed) or `slot-not-claimed`, `claim-expired`, `unrelated-session` (denied).
+- Writes outside managed slots return `allow: true` without taking the registry lock.
 - Writes into unclaimed slots return `allow: false`.
 - If the hook payload is missing a file path, the command returns `allow: true` with `reason: "no-file-path"`.
 

@@ -538,28 +538,89 @@ test('running from inside a slot resolves up to the workspace root with no leake
   assert.equal(existsSync(path.join(slotDir, 'docko')), false);
 });
 
-test('an explicit --root pointing inside a managed slot is refused, not fragmented', async () => {
+test('an explicit --root inside a managed slot resolves up instead of failing', async () => {
   const root = await makeWorkspace('docko-root-in-slot-');
   await runCli(['init', '--root', root]);
   const slotDir = path.join(root, 'slots', 'app-alpha');
 
-  const result = await runCli(['status', '--root', '.'], { cwd: slotDir });
-  assert.equal(result.code, 1);
-  const payload = JSON.parse(result.stderr);
-  assert.equal(payload.error.code, 'ROOT_INSIDE_SLOT');
-  assert.equal(payload.error.workspace_root, root);
+  // `--root .` is what every shipped example tells an agent to type, and agents run commands
+  // from inside slots. It must mean the same as no --root at all.
+  const status = parseStdout(await runCli(['status', '--root', '.', '--brief'], { cwd: slotDir }));
+  assert.equal(status.resolved_root, root);
+  assert.equal(status.workspace.workspace_root, root);
   assert.equal(existsSync(path.join(slotDir, 'docko')), false);
+
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'in-slot']);
+  const acquired = parseStdout(
+    await runCli(
+      [
+        'slot',
+        'acquire',
+        '--root',
+        '.',
+        '--session',
+        'in-slot',
+        '--branch',
+        'feat/in-slot',
+        '--task',
+        'work from inside a slot',
+        '--brief'
+      ],
+      { cwd: slotDir, env: { DOCKO_SESSION_ID: 'in-slot' } }
+    )
+  );
+  assert.equal(acquired.resolved_root, root);
 });
 
-test('init never walks up so a nested workspace can still be scaffolded', async () => {
+test('scaffolding commands refuse to reach up into an owning workspace', async () => {
   const root = await makeWorkspace('docko-init-nowalkup-');
   await runCli(['init', '--root', root]);
   const nested = path.join(root, 'slots', 'app-alpha', 'child');
+  const sibling = path.join(root, 'subproject');
   await mkdir(nested, { recursive: true });
+  await mkdir(sibling, { recursive: true });
 
-  const init = parseStdout(await runCli(['init', '--root', '.'], { cwd: nested }));
-  assert.equal(init.workspace_root_absolute, nested);
-  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), true);
+  // Explicit --root inside a slot.
+  const explicitInit = await runCli(['init', '--root', '.'], { cwd: nested });
+  assert.equal(explicitInit.code, 1);
+  const explicitPayload = JSON.parse(explicitInit.stderr);
+  assert.equal(explicitPayload.error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(explicitPayload.error.workspace_root, root);
+  // The message must carry absolute paths and a runnable command, not cwd-relative fragments.
+  assert.match(explicitPayload.error.message, /docko init --root "/);
+  assert.ok(explicitPayload.error.message.includes(root));
+  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), false);
+
+  // A bare init inside a slot is the same mistake and gets the same refusal.
+  const bareInit = await runCli(['init'], { cwd: nested });
+  assert.equal(bareInit.code, 1);
+  assert.equal(JSON.parse(bareInit.stderr).error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), false);
+
+  // install used to walk up and drop its assets in the parent workspace.
+  const installInSlot = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: nested });
+  assert.equal(installInSlot.code, 1);
+  assert.equal(JSON.parse(installInSlot.stderr).error.code, 'ROOT_INSIDE_SLOT');
+
+  const installInSibling = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: sibling });
+  assert.equal(installInSibling.code, 1);
+  const siblingPayload = JSON.parse(installInSibling.stderr).error;
+  assert.equal(siblingPayload.code, 'ROOT_NOT_WORKSPACE');
+  assert.equal(siblingPayload.provided_root, sibling);
+  assert.equal(siblingPayload.workspace_root, root);
+  assert.match(siblingPayload.message, /docko adapter claude-code install --root "/);
+  assert.equal(existsSync(path.join(sibling, '.claude-plugin')), false);
+  assert.equal(existsSync(path.join(root, '.claude-plugin')), false);
+
+  // A nested workspace outside slots/ is legitimate, so init still scaffolds there.
+  const nestedInit = await runCli(['init', '--root', '.', '--json'], { cwd: sibling });
+  assert.equal(nestedInit.code, 0, nestedInit.stderr);
+  assert.equal(existsSync(path.join(sibling, 'docko', 'registry.json')), true);
+
+  // ...and install works once that directory is a workspace of its own.
+  const installed = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: sibling });
+  assert.equal(installed.code, 0, installed.stderr);
+  assert.equal(parseStdout(installed).workspace_root, sibling);
 });
 
 test('CLI launcher delegates through the checked-in bin entrypoint', async () => {
@@ -799,9 +860,17 @@ test('ambiguous resolution requires explicit --session', async () => {
   assert.equal(claim.code, 3);
   assert.match(claim.stderr, /AMBIGUOUS_SESSION/);
   const error = JSON.parse(claim.stderr).error;
+  // Newest first: the caller almost always wants the session it just started.
   assert.deepEqual(
     error.active_sessions.map((session) => session.session_id),
-    ['ses_a', 'ses_b']
+    ['ses_b', 'ses_a']
+  );
+  assert.equal(error.active_session_count, 2);
+  assert.equal(error.newest_session_id, 'ses_b');
+  // The CLI adds the retry it would have run, with the newest session filled in.
+  assert.equal(
+    error.suggested_command,
+    'docko claim --root ' + root + ' --resource slot --id app-alpha --session ses_b'
   );
   assert.equal(error.active_sessions[0].runtime, 'shell');
   assert.equal(
@@ -861,6 +930,7 @@ test('brief output summarizes status, slot acquire, and session list', async () 
   assert.deepEqual(acquired, {
     ok: true,
     action: 'claimed-existing-slot',
+    resolved_root: root,
     session_id: 'worker',
     slot_id: 'app-alpha',
     application_id: null,
@@ -869,7 +939,8 @@ test('brief output summarizes status, slot acquire, and session list', async () 
     availability: {
       total_slots: 2,
       free_slots_before: 2,
-      claimed_slots_before: 0
+      claimed_slots_before: 0,
+      pinned_slot_count: 0
     },
     clone: null
   });
@@ -1028,7 +1099,7 @@ test('delegated teammate inherits parent authority through Claude subagent start
   );
 
   assert.equal(auth.allow, true);
-  assert.equal(auth.reason, 'delegated-child');
+  assert.equal(auth.reason, 'delegated');
 });
 
 test('pre-tool-use recognizes absolute paths inside managed slots', async () => {
@@ -1045,7 +1116,7 @@ test('pre-tool-use recognizes absolute paths inside managed slots', async () => 
   );
 
   assert.equal(auth.allow, true);
-  assert.equal(auth.reason, 'owner-session');
+  assert.equal(auth.reason, 'owner');
 });
 
 test(
@@ -1064,7 +1135,7 @@ test(
     );
 
     assert.equal(auth.allow, true);
-    assert.equal(auth.reason, 'owner-session');
+    assert.equal(auth.reason, 'owner');
   }
 );
 
@@ -1237,7 +1308,7 @@ test('session prune previews quiet sessions before ending them', async () => {
 
   const preview = parseStdout(await runCli(['session', 'prune', '--root', root, '--dry-run']));
   assert.equal(preview.dry_run, true);
-  assert.equal(preview.max_age_ms, 24 * 60 * 60 * 1000);
+  assert.equal(preview.max_age_ms, 8 * 60 * 60 * 1000);
   assert.deepEqual(
     preview.pruned_sessions.map((session) => session.session_id),
     ['ghost']
@@ -1274,7 +1345,9 @@ test('session prune honors an explicit max age and reports briefly', async () =>
   assert.deepEqual(pruned, {
     dry_run: false,
     max_age_ms: 1,
+    retention_ms: 7 * 24 * 60 * 60 * 1000,
     pruned_session_count: 1,
+    deleted_manifests: 0,
     pruned_sessions: [
       {
         session_id: 'worker',
@@ -1481,8 +1554,13 @@ test('pre-tool-use rejects a spoofed or missing session id even if the claim exi
     input: JSON.stringify({ file_path: 'slots/app-alpha/file.ts' })
   });
 
-  assert.equal(auth.code, 4);
-  assert.match(auth.stderr, /SESSION_NOT_FOUND/);
+  // The hook answers instead of failing — a failure would make the fail-open launcher allow the
+  // write — but a session docko does not know owns nothing, so the claim does not cover it.
+  assert.equal(auth.code, 0);
+  const denied = parseStdout(auth);
+  assert.equal(denied.allow, false);
+  assert.equal(denied.reason, 'unrelated-session');
+  assert.equal(denied.session_known, false);
 });
 
 test('session current supports id-only output and session list excludes ended sessions', async () => {
@@ -1654,8 +1732,10 @@ test('session end marks delegated children ended and preserves absolute workspac
   const activeSessions = parseStdout(await runCli(['session', 'list', '--root', root]));
   assert.deepEqual(activeSessions.active_sessions, []);
 
-  const leaderManifest = JSON.parse(await readFile(path.join(root, 'docko', 'sessions', 'leader.json'), 'utf8'));
-  const childManifest = JSON.parse(await readFile(path.join(root, 'docko', 'sessions', 'child.json'), 'utf8'));
+  // Ended manifests are moved out of the hot directory so the mutation path only reads live ones.
+  const endedDir = path.join(root, 'docko', 'sessions', 'ended');
+  const leaderManifest = JSON.parse(await readFile(path.join(endedDir, 'leader.json'), 'utf8'));
+  const childManifest = JSON.parse(await readFile(path.join(endedDir, 'child.json'), 'utf8'));
   assert.equal(path.isAbsolute(leaderManifest.workspace_root), true);
   assert.equal(path.isAbsolute(childManifest.workspace_root), true);
   assert.equal(typeof leaderManifest.ended_at, 'string');
@@ -1691,4 +1771,466 @@ test('logs returns recent entries in newest-first order and respects the limit',
     logs.entries.map((entry) => entry.operation),
     ['heartbeat', 'claim']
   );
+});
+
+test('the runtime session id resolves a bare command through CLAUDE_CODE_SESSION_ID', async () => {
+  const root = await makeWorkspace('docko-env-session-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'claude-code', '--session', 'ses_env']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_other']);
+
+  // Two active sessions: without the env id this is AMBIGUOUS_SESSION.
+  const claimed = parseStdout(
+    await runCli(['claim', '--root', root, '--resource', 'slot', '--id', 'app-alpha'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'ses_env' }
+    })
+  );
+  assert.equal(claimed.claim.owner_session_id, 'ses_env');
+
+  // DOCKO_SESSION_ID still wins when both are set.
+  const status = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], {
+      env: { DOCKO_SESSION_ID: 'ses_other', CLAUDE_CODE_SESSION_ID: 'ses_env' }
+    })
+  );
+  assert.equal(status.summary.session_id, 'ses_other');
+  assert.deepEqual(status.summary.my_claims, []);
+});
+
+test('status --claimed and the summary block replace hand-rolled filtering', async () => {
+  const root = await makeWorkspace('docko-status-summary-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'ses_owner',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--branch',
+    'feat/x',
+    '--task',
+    'do the thing'
+  ]);
+
+  const claimedOnly = parseStdout(
+    await runCli(['status', '--root', root, '--brief', '--claimed', '--session', 'ses_owner'])
+  );
+  assert.deepEqual(
+    claimedOnly.resources.map((resource) => resource.id),
+    ['app-alpha']
+  );
+  // The summary still describes the whole workspace, not the filtered view.
+  assert.deepEqual(claimedOnly.summary.slots, { total: 2, free: 1, claimed: 1 });
+  assert.deepEqual(claimedOnly.summary.my_claims, ['app-alpha']);
+  assert.equal(claimedOnly.resolved_root, root);
+  assert.equal(claimedOnly.summary.stale_candidates.length, 0);
+
+  const full = parseStdout(await runCli(['status', '--root', root, '--session', 'ses_owner']));
+  assert.equal(full.resolved_root, root);
+  assert.deepEqual(full.summary.my_claims, ['app-alpha']);
+  assert.equal(full.resources.length, 2);
+});
+
+test('session list returns the newest sessions and reports the full count', async () => {
+  const root = await makeWorkspace('docko-session-limit-');
+  await runCli(['init', '--root', root]);
+  for (const id of ['ses_1', 'ses_2', 'ses_3']) {
+    await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', id]);
+  }
+
+  const limited = parseStdout(await runCli(['session', 'list', '--root', root, '--brief', '--limit', '2']));
+  assert.equal(limited.active_session_count, 3);
+  assert.equal(limited.returned_session_count, 2);
+  assert.equal(limited.limit, 2);
+  assert.equal(limited.active_sessions.length, 2);
+  // Newest first, so the last session started leads.
+  assert.equal(limited.active_sessions[0].session_id, 'ses_3');
+});
+
+test('slot acquire prefers a named slot and skips pinned ones', async () => {
+  const root = await makeWorkspace('docko-acquire-prefer-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_a']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_b']);
+
+  // Round-robin would pick app-alpha; --prefer takes the named free slot instead.
+  const preferred = parseStdout(
+    await runCli([
+      'slot',
+      'acquire',
+      '--root',
+      root,
+      '--session',
+      'ses_a',
+      '--prefer',
+      'app-beta',
+      '--branch',
+      'feat/prefer',
+      '--task',
+      'take app-beta',
+      '--brief'
+    ])
+  );
+  assert.equal(preferred.slot_id, 'app-beta');
+
+  // A busy preference falls back to round-robin instead of failing.
+  const fallback = parseStdout(
+    await runCli([
+      'slot',
+      'acquire',
+      '--root',
+      root,
+      '--session',
+      'ses_b',
+      '--prefer',
+      'app-beta',
+      '--branch',
+      'feat/fallback',
+      '--task',
+      'fall back',
+      '--brief'
+    ])
+  );
+  assert.equal(fallback.slot_id, 'app-alpha');
+
+  const unknown = await runCli([
+    'slot',
+    'acquire',
+    '--root',
+    root,
+    '--session',
+    'ses_a',
+    '--prefer',
+    'nope',
+    '--branch',
+    'feat/none',
+    '--task',
+    'missing slot'
+  ]);
+  assert.equal(unknown.code, 1);
+  const error = JSON.parse(unknown.stderr).error;
+  assert.equal(error.code, 'PREFERRED_SLOT_NOT_FOUND');
+  assert.deepEqual(error.known_slot_ids, ['app-alpha', 'app-beta']);
+});
+
+test('release explains a free resource and records a forced takeover', async () => {
+  const root = await makeWorkspace('docko-release-errors-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_other']);
+
+  // Releasing something already free must say so, including under --brief.
+  const free = await runCli([
+    'release',
+    '--root',
+    root,
+    '--session',
+    'ses_owner',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--brief'
+  ]);
+  assert.equal(free.code, 1);
+  const freeError = JSON.parse(free.stderr).error;
+  assert.equal(freeError.code, 'RESOURCE_NOT_CLAIMED');
+  assert.match(freeError.message, /app-alpha is not claimed/);
+
+  await runCli(['claim', '--root', root, '--session', 'ses_owner', '--resource', 'slot', '--id', 'app-alpha']);
+
+  const nonOwner = await runCli([
+    'release',
+    '--root',
+    root,
+    '--session',
+    'ses_other',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha'
+  ]);
+  assert.equal(nonOwner.code, 2);
+  const nonOwnerError = JSON.parse(nonOwner.stderr).error;
+  assert.equal(nonOwnerError.code, 'RESOURCE_OWNED_BY_OTHER_SESSION');
+  assert.match(nonOwnerError.suggested_command, /--force/);
+
+  const forced = parseStdout(
+    await runCli([
+      'release',
+      '--root',
+      root,
+      '--session',
+      'ses_other',
+      '--resource',
+      'slot',
+      '--id',
+      'app-alpha',
+      '--force',
+      '--brief'
+    ])
+  );
+  assert.equal(forced.released, true);
+  assert.equal(forced.forced_by_session_id, 'ses_other');
+  assert.equal(forced.previous_owner_session_id, 'ses_owner');
+  assert.equal(forced.release_reason, 'force-release');
+
+  // The takeover is recorded, so an operator can see who forced the release and when.
+  const logs = parseStdout(await runCli(['logs', '--root', root, '--limit', '50']));
+  assert.equal(
+    logs.entries.some(
+      (entry) =>
+        entry.operation === 'release' &&
+        entry.session_id === 'ses_other' &&
+        entry.details?.release_reason === 'force-release' &&
+        entry.details?.previous_owner_session_id === 'ses_owner'
+    ),
+    true
+  );
+});
+
+test('session prune deletes ended manifests past the retention window', async () => {
+  const root = await makeWorkspace('docko-prune-retention-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ghost']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ghost']);
+
+  const endedManifest = path.join(root, 'docko', 'sessions', 'ended', 'ghost.json');
+  assert.equal(existsSync(endedManifest), true);
+
+  // A one-millisecond retention window reclaims it on the next prune.
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--retention-ms', '1', '--brief']));
+  assert.equal(pruned.retention_ms, 1);
+  assert.equal(pruned.deleted_manifests >= 1, true);
+  assert.equal(existsSync(endedManifest), false);
+});
+
+test('per-command help documents the command that was asked about', async () => {
+  const acquire = await runCli(['slot', 'acquire', '--help']);
+  assert.equal(acquire.code, 0);
+  assert.match(acquire.stdout, /docko slot acquire — claim a slot chosen by docko/);
+  assert.match(acquire.stdout, /--prefer <slot-id>/);
+
+  const release = await runCli(['release', '--help']);
+  assert.equal(release.code, 0);
+  assert.match(release.stdout, /RESOURCE_NOT_CLAIMED/);
+
+  const generic = await runCli(['--help']);
+  assert.equal(generic.code, 0);
+  assert.match(generic.stdout, /Run "docko <command> --help"/);
+});
+
+test('slot acquire counts pinned slots apart from claimed ones', async () => {
+  const root = await makeWorkspace('docko-acquire-pinned-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+  await runCli(['resource', 'ensure', '--root', root, '--resource', 'slot', '--id', 'app-beta', '--no-auto-acquire']);
+
+  const acquired = parseStdout(
+    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'count check', '--brief'])
+  );
+  assert.equal(acquired.slot_id, 'app-alpha');
+  // app-beta is out of rotation, not busy: reporting it as claimed made the workspace look full.
+  assert.deepEqual(acquired.availability, {
+    total_slots: 2,
+    free_slots_before: 1,
+    claimed_slots_before: 0,
+    pinned_slot_count: 1
+  });
+
+  const busy = await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'second', '--brief']);
+  assert.equal(busy.code, 2);
+  const error = JSON.parse(busy.stderr).error;
+  assert.equal(error.code, 'NO_FREE_SLOT');
+  assert.equal(error.slot_count, 2);
+  assert.equal(error.busy_slot_count, 1);
+  assert.equal(error.pinned_slot_count, 1);
+  assert.deepEqual(error.pinned_slot_ids, ['app-beta']);
+});
+
+test('status never reports a session id this workspace has never seen', async () => {
+  const root = await makeWorkspace('docko-status-envsession-');
+  await runCli(['init', '--root', root]);
+
+  const foreign = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], { env: { DOCKO_SESSION_ID: 'ses_from_another_repo' } })
+  );
+  assert.equal(foreign.summary.session_id, null);
+
+  // A real session in this workspace is still picked up from the environment.
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_real']);
+  const known = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], { env: { DOCKO_SESSION_ID: 'ses_real' } })
+  );
+  assert.equal(known.summary.session_id, 'ses_real');
+});
+
+test('an unknown environment session id is never suggested as the ambiguity retry', async () => {
+  const root = await makeWorkspace('docko-ambiguous-envsession-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_a']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_b']);
+
+  const claim = await runCli(['claim', '--root', root, '--resource', 'slot', '--id', 'app-alpha'], {
+    env: { DOCKO_SESSION_ID: 'ses_ghost' }
+  });
+  assert.equal(claim.code, 3);
+  const error = JSON.parse(claim.stderr).error;
+  assert.equal(error.code, 'AMBIGUOUS_SESSION');
+  // The env id is exactly the id that just failed to resolve, so it must not come back.
+  assert.equal(error.newest_session_id, 'ses_b');
+  assert.match(error.suggested_command, /--session ses_b$/);
+  assert.doesNotMatch(error.suggested_command, /ses_ghost/);
+});
+
+test('session prune accepts a zero retention window', async () => {
+  const root = await makeWorkspace('docko-prune-zero-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_done']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ses_done']);
+
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--retention-ms', '0']));
+  assert.equal(pruned.retention_ms, 0);
+  assert.ok(pruned.deleted_manifests >= 1);
+  assert.equal(existsSync(path.join(root, 'docko', 'sessions', 'ended', 'ses_done.json')), false);
+});
+
+test('session current refuses an ended session through the CLI', async () => {
+  const root = await makeWorkspace('docko-session-current-cli-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_done']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ses_done']);
+
+  const current = await runCli(['session', 'current', '--root', root, '--session', 'ses_done']);
+  assert.equal(current.code, 4);
+  assert.equal(JSON.parse(current.stderr).error.code, 'SESSION_NOT_FOUND');
+});
+
+test('resource ensure pins a claimed slot and leaves other resources their path', async () => {
+  const root = await makeWorkspace('docko-ensure-pin-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_pin']);
+  await runCli(['claim', '--root', root, '--session', 'ses_pin', '--resource', 'slot', '--id', 'app-alpha']);
+
+  // Regression: an absent --path arrived as null and read as "change the path", so pinning a
+  // claimed slot failed with RESOURCE_MUTATION_DENIED.
+  const pinned = await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--no-auto-acquire'
+  ]);
+  assert.equal(pinned.code, 0);
+  assert.equal(parseStdout(pinned).auto_acquire, false);
+
+  // And the same null used to wipe the path of every non-slot resource.
+  await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'shared-env',
+    '--id',
+    'staging',
+    '--path',
+    'envs/staging'
+  ]);
+  const reensured = parseStdout(
+    await runCli(['resource', 'ensure', '--root', root, '--resource', 'shared-env', '--id', 'staging'])
+  );
+  assert.equal(reensured.path, 'envs/staging');
+});
+
+test('a slot directory with an unusable name is ignored by discovery and denied by the hook', async () => {
+  const root = await makeWorkspace('docko-invalid-slot-');
+  await runCli(['init', '--root', root]);
+  await mkdir(path.join(root, 'slots', 'my slot'), { recursive: true });
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_inv']);
+
+  const status = parseStdout(await runCli(['status', '--root', root]));
+  assert.equal(
+    status.resources.some((resource) => resource.resource_id === 'my slot'),
+    false
+  );
+  assert.deepEqual(status.ignored_slot_dirs, ['slots/my slot']);
+
+  const brief = parseStdout(await runCli(['status', '--root', root, '--brief']));
+  assert.deepEqual(brief.ignored_slot_dirs, ['slots/my slot']);
+
+  // Regression: with no resource for it, the write used to be answered `path-not-managed`.
+  const auth = parseStdout(
+    await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root, '--session', 'ses_inv'], {
+      input: JSON.stringify({ file_path: path.join(root, 'slots', 'my slot', 'index.ts') })
+    })
+  );
+  assert.equal(auth.allow, false);
+  assert.equal(auth.reason, 'slot-not-claimed');
+  assert.equal(auth.invalid_slot_dir, 'slots/my slot');
+});
+
+test('pre-tool-use uses the payload session id and answers an unknown session', async () => {
+  const root = await makeWorkspace('docko-hook-session-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli(['claim', '--root', root, '--session', 'ses_owner', '--resource', 'slot', '--id', 'app-alpha']);
+
+  const filePath = path.join(root, 'slots', 'app-alpha', 'index.ts');
+
+  // No --session: the payload's own session id has to win over single-active resolution.
+  const owner = parseStdout(
+    await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root], {
+      input: JSON.stringify({ session_id: 'ses_owner', file_path: filePath })
+    })
+  );
+  assert.equal(owner.allow, true);
+  assert.equal(owner.reason, 'owner');
+  assert.equal(owner.session_known, true);
+
+  // Regression: an unregistered session threw SESSION_NOT_FOUND, and the fail-open launcher
+  // turned that into an allowed write.
+  const ghost = await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root], {
+    input: JSON.stringify({ session_id: 'ses_ghost', file_path: filePath })
+  });
+  assert.equal(ghost.code, 0);
+  const ghostAuth = parseStdout(ghost);
+  assert.equal(ghostAuth.allow, false);
+  assert.equal(ghostAuth.reason, 'unrelated-session');
+  assert.equal(ghostAuth.session_id, 'ses_ghost');
+  assert.equal(ghostAuth.session_known, false);
+});
+
+test('adapter install refuses a --dest that escapes the workspace root', async () => {
+  const root = await makeWorkspace('docko-dest-guard-');
+  await runCli(['init', '--root', root]);
+
+  const escaped = await runCli([
+    'adapter',
+    'claude-code',
+    'install',
+    '--root',
+    root,
+    '--dest',
+    path.join('..', 'outside')
+  ]);
+  assert.equal(escaped.code, 1);
+  const error = JSON.parse(escaped.stderr).error;
+  assert.equal(error.code, 'USAGE_ERROR');
+  assert.equal(error.option, 'dest');
+  assert.equal(existsSync(path.join(path.dirname(root), 'outside')), false);
+
+  // A destination inside the root is still accepted.
+  const ok = await runCli(['adapter', 'claude-code', 'install', '--root', root, '--dest', 'tools/docko']);
+  assert.equal(ok.code, 0);
+  assert.equal(existsSync(path.join(root, 'tools', 'docko', 'scripts', 'docko-claude-hook.mjs')), true);
 });

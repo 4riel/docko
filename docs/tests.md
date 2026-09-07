@@ -15,12 +15,14 @@ All tests execute against built `dist/` output. The package scripts handle that 
 
 ## Current Implemented Suite
 
-- `tests/core.unit.test.mjs`: focused unit coverage for errors, filesystem helpers, session resolution, lock ownership, and mutation-gate timeout behavior
-- `tests/core.services.test.mjs`: service-layer coverage for registry validation, stale recovery, logs, mirror rendering, and resource-catalog defaults
-- `tests/docko.e2e.test.mjs`: end-to-end CLI flows for init, claims, release, delegation, stale recovery, logs, and authorization
+- `tests/core.unit.test.mjs`: focused unit coverage for errors, filesystem helpers, session resolution, lock ownership, mutation-gate timeout, clock-skew and refresh behavior, `REGISTRY_LOCK_LOST`, platform-correct slots containment, ignored slot directories, the claim heartbeat throttle, and the ended-manifest touch no-op
+- `tests/core.services.test.mjs`: service-layer coverage for registry validation, stale recovery, logs, mirror rendering, resource-catalog defaults, stale-lock quarantine under contention, and the uncapped `session prune` drain
+- `tests/docko.e2e.test.mjs`: end-to-end CLI flows for init, claims, release, delegation, stale recovery, logs, authorization, `resource ensure` without `--path`, ignored slot directories, the hook's payload session id, and the `--dest` guard
 - `tests/cli.unit.test.mjs`: CLI parser and interactive-init coverage, including repeated flags, prompt flows, payload fallbacks, and install edge cases
-- `tests/claude-code-adapter.test.mjs`: Claude adapter settings, installer behavior, settings merge, and real hook command execution
-- `tests/helpers/cli-test-helpers.mjs`: shared child-process and workspace helpers used by the CLI, adapter, and e2e suites
+- `tests/claude-code-adapter.test.mjs`: Claude adapter settings, installer behavior (launcher refresh on version drift, generated files always refreshed while edited assets are preserved), settings merge, doctor diagnostics including plugin manifest drift and matcher-aware `--fix` deduplication, and real hook command execution
+- `tests/claude-plugin.test.mjs`: distributable plugin bundle — manifests, marketplace entry, hook shapes and timeouts, launcher version header, the repo's own dogfood copies, CLAUDE_ENV_FILE export, per-reason deny messages including argument quoting, invalid slot directories and unregistered sessions, and shipped command/skill guidance
+- `tests/core.persistence.test.mjs`: atomic-write retries, ended-manifest relocation and retention, temp-artifact sweeping on the read path, authorization for undiscovered slot directories, and short-stale-window heartbeats
+- `tests/helpers/cli-test-helpers.mjs`: shared child-process and workspace helpers used by the CLI, adapter, and e2e suites. They strip ambient `DOCKO_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`/`DOCKO_ROOT` so a suite run inside an agent session cannot inherit that session
 
 Coverage is gathered from built package outputs under `packages/*/dist/*.js` so the numbers reflect the shipped CLI, core, and adapter surfaces rather than test-only source paths.
 Package-install coverage runs from fresh temp directories outside the monorepo so npm does not inherit parent workspace context during tarball validation.

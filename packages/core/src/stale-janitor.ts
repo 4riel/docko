@@ -116,6 +116,14 @@ export class StaleJanitor {
         claim: { ...resource.claim },
         delegations: [...(resource.delegations ?? [])]
       });
+      resource.last_claim = {
+        owner_session_id: resource.claim.owner_session_id,
+        released_at: now.toISOString(),
+        reason: 'stale-recovery',
+        branch: resource.claim.branch ?? null,
+        task: resource.claim.task ?? null,
+        stale_after_ms: resource.claim.stale_after_ms ?? null
+      };
       resource.status = 'free';
       resource.claim = null;
       resource.delegations = [];

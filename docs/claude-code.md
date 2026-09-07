@@ -7,7 +7,42 @@ Source repository: [`4riel/docko`](https://github.com/4riel/docko)
 Current install tag: `docko-workspace@alpha`
 CLI command: `docko`
 
-Install the CLI first if it is not already available:
+There are two ways to wire Claude Code to docko. Both share the same hook launcher, commands, and skill; they differ only in where those files live.
+
+## Install As A Claude Code Plugin (Recommended)
+
+The repository doubles as a Claude Code plugin marketplace. Inside Claude Code run:
+
+```
+/plugin marketplace add 4riel/docko
+/plugin install docko@docko
+```
+
+That installs the plugin bundle from `packages/adapters/claude-code/plugin/`: the four hooks, the `/dock-*` commands, and the `workspace-orchestration` skill. Nothing is written into your project.
+
+Then bootstrap any workspace root once:
+
+```bash
+docko init --root .
+```
+
+Plugin behavior worth knowing:
+
+- Hooks no-op silently in projects without a `docko/registry.json`, so the plugin can stay enabled globally.
+- Hooks call the `docko` CLI. Install it globally (`npm install --global docko-workspace@alpha`) for fast hooks; if it is missing from `PATH` the launcher falls back to `npx docko-workspace@alpha`, which is slower on first run. `DOCKO_BIN` overrides both.
+- `PreToolUse` denials are reported through the hook protocol (`permissionDecision: "deny"`), so unauthorized slot writes are actually blocked. Authorized writes emit nothing: docko vetoes, it never widens your normal permission flow.
+- `SessionStart` registers the Claude session with docko using Claude's own session id, so later hook calls resolve the right session even with several concurrent sessions in one workspace.
+- `SessionStart` also exports the session id into the session's shell environment. When Claude Code provides `$CLAUDE_ENV_FILE`, the launcher appends `DOCKO_SESSION_ID`, `DOCKO_RUNTIME`, and `DOCKO_ROOT` to it, so a bare `docko claim` from a Bash tool call resolves to the right session instead of failing with `AMBIGUOUS_SESSION`. Only keys matching `^[A-Z][A-Z0-9_]*$` with single-line values are written, and a failure there never breaks the session. The CLI also falls back to `CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every tool call, so the flow still works on hosts that do not provide an env file.
+- A denial names the slot, the reason, and one runnable recovery command. The three denial reasons render differently:
+  - `slot-not-claimed`: the slot is free (with its previous owner when known), and the message carries a `docko slot acquire --prefer <slot>` line.
+  - `claim-expired`: your own claim lapsed, with the expiry time and the quiet window, and a `docko claim` line that restores it with the same branch and task.
+  - `unrelated-session`: another session owns it, with that session's task, branch, and whether it is still active, plus a `docko release --force` line for a deliberate takeover.
+- A write into a `slots/` directory whose name is not a valid resource id is denied with the directory name and the instruction to rename it. Such a directory is never registered as a slot, so claiming it is impossible and only a rename clears the block.
+- When the acting session is not registered with docko — the SessionStart hook did not run — the write is evaluated as a session that owns nothing, and the denial adds the `docko session start` line that registers it. The hook does not fail, so a fail-open launcher can no longer turn a missing session into an allowed write.
+
+## Repo-Local Install (`docko init --claude`)
+
+If you prefer everything checked into the project (no plugin system involved), install the CLI first if it is not already available:
 
 ```bash
 npm install --global docko-workspace@alpha
@@ -47,7 +82,9 @@ That scaffolds:
 
 Those file paths are not just examples. They come from the current installer templates and generated output verified by `tests/claude-code-adapter.test.mjs`.
 
-`plugin.json` is generated, not copied: its `version` is stamped from the installed docko version on every install, so the bundle never drifts behind the package.
+`plugin.json`, `hooks/hooks.json`, and `.claude/settings.docko.json` are generated, not copied. They are docko's machine state, so every install rewrites them from the installed docko version and the current `--dest`; a file whose content did not change is reported under `unchanged_files` rather than `written_files`. The launcher is refreshed on version drift. Everything else — commands, the skill, and the snippets — is yours to edit and is preserved unless you pass `--force`.
+
+The install acts on the root you gave it and never resolves up to an owning workspace: a directory inside another workspace's `slots/` tree fails with `ROOT_INSIDE_SLOT`, and a non-workspace directory inside another workspace fails with `ROOT_NOT_WORKSPACE`.
 
 ## Add The Repo Rules
 
@@ -57,7 +94,7 @@ Mirror the same operating rules into `AGENTS.md` using `.claude/snippets/AGENTS.
 
 If you use the interactive `init` flow, docko can inject both files for you after asking for confirmation.
 
-Those snippets are intentionally short. They give Claude a minimal command-first recipe, tell it to start with `docko status --root . --brief`, prefer `docko slot acquire` for writable work, and tell it to stop if the CLI is unavailable instead of improvising from `docko/registry.json`.
+Those snippets are intentionally short. They give Claude a minimal command-first recipe, tell it to start with `docko status --brief`, prefer `docko slot acquire` for writable work, and tell it to stop if the CLI is unavailable instead of improvising from `docko/registry.json`.
 
 ## Use It
 
@@ -72,14 +109,15 @@ That is the intended experience. The user should not have to micromanage slot bo
 
 The fast-path behavior Claude should follow is:
 
-1. Run `/dock-status` or `docko status --root . --brief`.
-2. Use `docko slot acquire --root . --branch <branch> --task "<task>" --brief` when you want docko to choose the next available slot using round-robin selection.
-3. If every slot is busy and docko asks whether to create a fresh managed clone, answer explicitly.
-4. Use `/dock-claim` or `docko claim --root . --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot you want.
-5. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko's hook checks.
-6. Release it with `/dock-release <slot>` or `docko release --root . --resource slot --id <slot>`.
+1. Run `/dock-status` or `docko status --brief`. docko walks up to the workspace root, so this works from inside a slot; `--root <path>` is only needed from outside the workspace.
+2. Use `docko slot acquire --session "$DOCKO_SESSION_ID" --branch <branch> --task "<task>" --brief` when you want docko to choose the slot. Selection is round-robin, starting after the last slot claimed for that application.
+3. Pass `--application <id>` in a multi-application workspace, and `--prefer <slot-id>` when one specific slot is the right one.
+4. If every slot is busy and docko asks whether to create a fresh managed clone, answer explicitly.
+5. Use `/dock-claim` or `docko claim --session "$DOCKO_SESSION_ID" --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot you want. `branch` is claim metadata; docko never runs `git checkout`.
+6. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko's hook checks.
+7. Release it with `/dock-release <slot>` or `docko release --session "$DOCKO_SESSION_ID" --resource slot --id <slot>`.
 
-If a command reports `AMBIGUOUS_SESSION`, Claude should run `docko session list --root . --brief`, retry with the correct explicit `--session <id>`, and not end sessions unless the user asked for cleanup.
+If a command reports `AMBIGUOUS_SESSION`, Claude should run the `suggested_command` from the error payload (the same command with `--session` filled in), or pick an id from `docko session list --brief`, and not end sessions unless the user asked for cleanup. It should never invent a session id: the write hook checks Claude's own session, so a made-up id claims a slot that then blocks its own writes.
 
 If `docko` is not runnable, Claude should check `DOCKO_BIN` and otherwise stop and tell the user the CLI is unavailable. It should not silently fall back to browsing `docko/registry.json` and editing a free-looking slot.
 
@@ -108,24 +146,22 @@ The recommended settings fragment is:
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
+            "timeout": 60
           }
         ]
       }
     ],
     "SessionEnd": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
+            "timeout": 15
           }
         ]
       }
@@ -136,20 +172,19 @@ The recommended settings fragment is:
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
+            "timeout": 30
           }
         ]
       }
     ],
     "SubagentStart": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
+            "timeout": 30
           }
         ]
       }
@@ -157,6 +192,12 @@ The recommended settings fragment is:
   }
 }
 ```
+
+Details that matter:
+
+- The launcher path is absolute, generated from the workspace root at install time (or from `--dest`), so hooks resolve from any working directory and any shell. The distributable plugin uses `${CLAUDE_PLUGIN_ROOT}` instead.
+- Only `PreToolUse` carries a matcher. `SessionStart` matches a session source and `SessionEnd`/`SubagentStart` take none, so `"*"` would be meaningless there.
+- Timeouts differ per event: `SessionStart` is 60 s because it may pay for an `npx` cold start; the tool and subagent hooks get 30 s; `SessionEnd` 15 s. The plugin bundle and the repo-local install use the same numbers, and a test asserts they stay in sync.
 
 `docko adapter claude-code settings` prints the same fragment as JSON. The command strings are intentionally the same across Bash, PowerShell, and `cmd.exe`.
 
@@ -173,12 +214,19 @@ The important team path is:
 
 That makes Claude Code Agent Teams a first-class `docko` workflow.
 
+Which teammates need `docko delegate`:
+
+- **Subagents started with the Agent tool share the parent's session id.** They inherit the parent's claim automatically and need no docko call. `SubagentStart` also registers a delegated session and copies the parent's delegations, so either identity is authorized.
+- **A separately launched `claude` process gets its own session id.** It is not covered by the parent's claim, and its first write into the slot is denied as `unrelated-session`. Delegate it explicitly: `docko delegate --session <owner> --child-session <child> --resource slot --id <slot>`.
+- Do not work around a denial by overwriting `CLAUDE_CODE_SESSION_ID`. Claim, delegate, or release; a spoofed id only moves the problem.
+
 The adapter tests cover the important parts of that claim:
 
-- the generated hook commands are shell-neutral
-- install writes the expected repo-local assets
-- settings merging is idempotent
-- `PreToolUse` authorizes writes inside a claimed slot
+- the generated hook commands are absolute and shell-neutral, and match the plugin bundle's matchers and timeouts
+- install writes the expected repo-local assets and refreshes an outdated hook launcher
+- settings merging is idempotent and never leaves a duplicate docko registration
+- `PreToolUse` authorizes writes inside a claimed slot, and each denial reason renders its own recovery command with every slot id and path quoted
+- `SessionStart` exports `DOCKO_SESSION_ID` through `$CLAUDE_ENV_FILE`
 - `SubagentStart` is part of the installed hook surface
 
 ## Codex Contrast
@@ -201,6 +249,8 @@ This repo does not currently ship a Docko Codex adapter package, Codex templates
 
 ## Notes
 
-- The Node hook launcher assumes `docko` is on `PATH`. For local testing, set `DOCKO_BIN` to an absolute executable path.
+- The Node hook launcher prefers `docko` on `PATH` and falls back to `npx docko-workspace@alpha` when it is missing. For local testing, set `DOCKO_BIN` to an absolute executable path (on Windows a multi-token value like `node "C:\path\to\docko.js"` also works).
 - If you do not want automatic settings merging, install without `--write-settings-local` and merge `.claude/settings.docko.json` manually.
 - The repo-local `.claude-plugin/docko/` bundle is intentionally plain. It avoids hiding protocol logic behind opaque Claude-only behavior.
+- Run `docko adapter claude-code doctor` (or `/dock-doctor`) when hooks misbehave. It reports launcher and plugin manifest version drift, duplicate or dangling hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, how `docko` resolves, and the session id this shell sees. `--fix` removes registrations that point at a launcher which is missing or out of date, collapses duplicate registrations down to the first healthy one per event *and* matcher (so a deliberate second registration with a different matcher survives), and re-runs the diagnosis so `issues` and `ok` describe the post-fix state.
+- The installed launcher carries a `// docko-launcher-version:` header. `docko adapter claude-code install` refreshes it whenever it differs from the shipped version, even without `--force`, because a stale launcher silently degrades every hook.

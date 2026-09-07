@@ -1,0 +1,14 @@
+{
+  "name": "docko",
+  "owner": {
+    "name": "4riel"
+  },
+  "description": "docko: workspace slot coordination for AI coding agents, driven by Claude Code hooks.",
+  "plugins": [
+    {
+      "name": "docko",
+      "source": "./packages/adapters/claude-code/plugin",
+      "description": "Workspace slot coordination for multi-agent work: session ownership, slot write protection, and teammate delegation driven by docko hooks."
+    }
+  ]
+}

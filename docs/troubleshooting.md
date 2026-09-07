@@ -20,14 +20,22 @@ Then retry the command with `--session leader`.
 
 Multiple active sessions exist and docko refuses to guess.
 
+The error payload carries everything needed to recover:
+
+- `suggested_command`: the command you just ran, re-rendered with `--session` filled in. Run it.
+- `newest_session_id` and `active_sessions`: the ten most recently updated sessions, newest first.
+- `active_session_count`: how many are active in total.
+
 Fix:
 
 ```text
-docko session list --root ./workspace --brief
+docko session list --root ./workspace --brief --limit 5
 docko claim --root ./workspace --session leader --resource slot --id main
 ```
 
-Do not end the listed sessions unless you are intentionally cleaning up workspace state. `AMBIGUOUS_SESSION` means docko needs an explicit session choice; it does not mean those sessions are stale.
+Under Claude Code you should rarely see this: the SessionStart hook exports `DOCKO_SESSION_ID`, and the CLI also falls back to `CLAUDE_CODE_SESSION_ID`. If it keeps happening, run `docko adapter claude-code doctor` to check whether the hook launcher is installed and current.
+
+Do not end the listed sessions unless you are intentionally cleaning up workspace state. `AMBIGUOUS_SESSION` means docko needs an explicit session choice; it does not mean those sessions are stale. Never invent a session id to get past it: the write hook checks the runtime's own session, so a made-up id claims a slot that then blocks your own writes with `unrelated-session`.
 
 ### `SESSION_NOT_FOUND`
 
@@ -43,7 +51,7 @@ Common causes:
 ### `session list` Keeps Growing
 
 Sessions are only marked ended by `session end`, so crashed or abandoned runtimes used to stay active forever.
-The janitor now ends sessions that stay quiet past `workspace.config.janitor.session_stale_after_ms` (default 24 hours) on every registry mutation.
+The janitor now ends sessions that stay quiet past `workspace.config.janitor.session_stale_after_ms` (default 8 hours) on every registry mutation.
 
 To clear an existing backlog now:
 
@@ -57,6 +65,10 @@ Notes:
 - start with `--dry-run`; it reports the same set without writing anything
 - `--max-age-ms <n>` prunes more aggressively for one run, for example `--max-age-ms 3600000` for an hour
 - sessions that still own or are delegated a live claim are never ended, so an active teammate is safe
+
+### Ended sessions and `docko/sessions/ended/`
+
+Ending a session moves its manifest to `docko/sessions/ended/` so the hot path only reads live sessions. `docko session prune --retention-ms <n>` deletes ended manifests older than the window (default 7 days) and reports `deleted_manifests`.
 
 ### `SESSION_ID_CONFLICT`
 
@@ -137,6 +149,12 @@ The resource ID is unsafe. Path traversal and spaces are rejected.
 
 Use simple IDs such as `main`, `app-alpha`, or `staging`.
 
+### A slot directory that never appears in `status`
+
+A directory under `slots/` whose name is not a valid resource id (`slots/my slot`, `slots/-tmp`) is skipped by discovery and listed under `ignored_slot_dirs` instead. It owns no resource, so it can never be claimed, and writes into it are denied with a message naming the directory.
+
+Rename the directory to a valid id and re-run `docko status`. The claim then works normally.
+
 ### `ROOT_PARENT_NOT_FOUND`
 
 The parent folder of `--root` does not exist yet.
@@ -151,15 +169,30 @@ Choose a directory path and retry.
 
 ### `ROOT_INSIDE_SLOT`
 
-You passed an explicit `--root` that resolves inside a managed `slots/` directory. docko refuses rather than fragmenting a second registry into the slot.
+A scaffolding command — `docko init` or `docko adapter claude-code install` — was pointed at a directory inside another workspace's managed `slots/` tree. It refuses rather than scaffolding a second registry, or a second Claude Code install, inside a slot.
 
-The error payload reports both `provided_root` and the owning `workspace_root`. Re-run against the workspace root:
+This fires whether or not `--root` was passed: a bare `docko init` run from inside a slot is the same mistake.
+
+The message names the absolute workspace root and the command to run instead; the payload also reports `provided_root` and `workspace_root`.
 
 ```text
-docko status --root ./workspace
+docko init --root "/abs/path/to/workspace"
+docko adapter claude-code install --root "/abs/path/to/workspace"
 ```
 
-Note: an *implicit* root (cwd or `DOCKO_ROOT`) inside a slot is not an error — docko walks up to the owning workspace automatically. Only an explicit `--root` inside a slot is rejected.
+Every other command resolves up instead of failing: `docko status --root .` from inside a slot works and reports the owning workspace as `resolved_root`.
+
+### `ROOT_NOT_WORKSPACE`
+
+`docko adapter claude-code install` was pointed at a directory that has no registry of its own but sits inside another workspace. Installing there would scatter `.claude-plugin/` and `.claude/` assets outside the workspace that owns them, so it refuses instead of silently installing into the ancestor.
+
+Exit code 1. The payload reports `provided_root` and `workspace_root`.
+
+```text
+docko adapter claude-code install --root "/abs/path/to/workspace"
+```
+
+`docko init` allows this case: a nested workspace outside `slots/` is legitimate, and init scaffolds one at the directory you named.
 
 ### `SOURCE_NOT_FOUND`
 
@@ -220,3 +253,62 @@ docko status --root ./workspace --resource slot --id main
 ```
 
 If the claim is stale, the response can include the automatic release in `janitor.released_claims`. If the owner is still live and you need to recover intentionally, use `release --force`.
+
+`docko status --brief` also reports `summary.stale_candidates`: claims that have been quiet for more than half their stale window, with the owner's `last_heartbeat_at`. Refresh yours with `docko heartbeat` before it lapses.
+
+## Workspace And Root Problems
+
+### `WORKSPACE_NOT_INITIALIZED`
+
+You ran a command against a directory with no `docko/registry.json`, and no ancestor has one either.
+
+```text
+docko init --root "/abs/path/to/workspace"
+```
+
+Exit code 1. Previously this surfaced as a raw `ENOENT` naming an internal lock path.
+
+### `--root .` from inside a slot
+
+For read and write commands this is no longer an error. docko walks up from the given root to the workspace that owns `docko/registry.json` and reports the result as `resolved_root`.
+
+The scaffolding commands (`init` and `adapter claude-code install`) never walk up, because resolving up would silently write into a workspace the caller did not name. From inside a slot they fail with `ROOT_INSIDE_SLOT`; `install` from a non-workspace directory inside a workspace fails with `ROOT_NOT_WORKSPACE`. Both messages name the absolute workspace root and the command to run instead.
+
+## Concurrency And Filesystem
+
+### `REGISTRY_LOCK_TIMEOUT`
+
+Another docko process held `docko/.registry.lock/` for longer than the wait budget. The error details carry `lock_dir`, `waited_ms`, the lock `owner` (pid, hostname, start time), and `next_steps`.
+
+What to check:
+
+1. Is another docko command, hook, or poller running? Concurrent hooks on a busy workspace are the usual cause; retry with a short backoff instead of a fixed interval.
+2. How old is the lock? Staleness is judged purely by age, from the older of the stamp's `acquired_at` and the lock directory's mtime: a lock older than 30 seconds is treated as abandoned and broken automatically by the next caller. A live holder re-stamps itself every 10 seconds, so only a process that died or was suspended reaches that age. A stamp dated more than a second in the future (clock skew, a restored backup) counts as the oldest possible time, so it can never wedge the workspace; a sub-second difference is filesystem timestamp precision and reads as "now". The recorded `pid` is diagnostic only — docko never probes it for liveness.
+3. If the lock somehow survives, deleting `docko/.registry.lock/` is safe when no docko process is running. A `docko/.registry.lock.stale-*` directory is a lock docko quarantined while breaking it; it is deleted immediately and is only left behind by a process killed mid-break, after which the temp sweeper reclaims it.
+
+Pollers that call `docko status` on a timer should back off after repeated timeouts rather than retrying at the same rate.
+
+### `REGISTRY_LOCK_LOST`
+
+The lock this command held was broken by another process before it could persist. That means the command ran longer than the 30-second stale window without its refresh timer getting a turn — a suspended laptop, or a process frozen by a debugger.
+
+Nothing was written: the check happens immediately before the registry write. Retry the command.
+
+### `ATOMIC_WRITE_FAILED` and `EPERM: operation not permitted, rename`
+
+On Windows, `rename` fails with `EPERM`/`EACCES`/`EBUSY` whenever the destination file is open in another process without share-delete — typically a real-time antivirus scanner, or another docko process reading the same manifest. docko retries these renames with backoff and only raises `ATOMIC_WRITE_FAILED` (exit 2) when the retry budget is exhausted; the error names the file and the attempt count.
+
+If you see it repeatedly, exclude the workspace's `docko/` directory from real-time antivirus scanning.
+
+A failure to write the generated `docko/registry.md` mirror never fails the command; it is best-effort and logged.
+
+### Leftover `.docko-tmp-*` entries
+
+Atomic writes stage content in a sibling temp file. A process killed mid-write (for example a hook that hit its timeout) can leave one behind. They are safe to delete, and docko sweeps stale ones during normal operation.
+
+## Facts That Look Like Bugs
+
+- **`branch` is claim metadata.** docko records the branch on a claim and never runs `git checkout`. If the slot's working tree is on another branch, that is git state, not docko state.
+- **Claims are slot-scoped.** A claim reserves one slot for one session. It does not reserve a branch, a PR, or individual files, and two sessions cannot share one slot.
+- **`--brief` is the compact JSON form**, not a different command. Every payload is JSON on stdout; errors are JSON on stderr with a non-zero exit code.
+- **The janitor only touches registry state.** Reclaiming a stale claim never modifies files inside a slot.

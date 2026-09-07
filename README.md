@@ -22,20 +22,41 @@ npm install --global docko-workspace@alpha
 
 Prefer zero-install? Replace `docko` with `npx --yes --package docko-workspace@alpha docko` in every example below.
 
-## Quickstart (Claude Code)
+## Quickstart (Claude Code plugin)
+
+This repo doubles as a Claude Code plugin marketplace. Inside Claude Code:
+
+```
+/plugin marketplace add 4riel/docko
+/plugin install docko@docko
+```
+
+Then bootstrap any workspace root once:
+
+```sh
+docko init --root .
+```
+
+The plugin ships the hooks, the `/dock-*` commands, and the `workspace-orchestration` skill — nothing is copied into your project. Hooks no-op in projects without a `docko/` workspace, so the plugin can stay enabled globally. If `docko` is not on `PATH`, the hooks fall back to `npx docko-workspace@alpha` automatically. From there:
+
+- **SessionStart** opens a docko session automatically and exports `DOCKO_SESSION_ID` into the session's shell, so the commands Claude runs address the right session.
+- **PreToolUse** blocks `Edit` / `Write` into slots the session does not own, and the denial names the slot, the reason, and the one command that fixes it.
+- **SubagentStart** hands a delegated teammate inherited access to the parent's slot.
+- **SessionEnd** releases claims for you.
+
+Something misbehaving? `/dock-doctor` (or `docko adapter claude-code doctor`) reports launcher drift, duplicate hook registrations, and how `docko` resolves.
+
+You work in Claude Code normally. Docko commands run in the background.
+
+## Quickstart (repo-local install)
+
+Prefer everything checked into the project instead of a plugin?
 
 ```sh
 docko init --root . --claude
 ```
 
-That is it. The adapter installs hooks into `.claude/` and wires `CLAUDE.md` guidance. From there:
-
-- **SessionStart** opens a docko session automatically.
-- **PreToolUse** blocks `Edit` / `Write` into slots the session does not own.
-- **SubagentStart** hands a delegated teammate inherited access to the parent's slot.
-- **SessionEnd** releases claims for you.
-
-You work in Claude Code normally. Docko commands run in the background.
+The adapter writes the same hooks, commands, and skill into `.claude/` and `.claude-plugin/docko/`, and wires `CLAUDE.md` guidance.
 
 > Want both Claude Code and Codex guidance in one run? Use `docko init --root . --claude --codex`.
 

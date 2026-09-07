@@ -88,8 +88,14 @@ test('SessionSherpa covers missing session paths and resolution modes', async ()
   assert.equal(resolution.sessionId, 'explicit');
 
   resolution = await sherpa.resolve(null, 'env-session');
+  assert.equal(resolution.source, 'single-active');
+  assert.equal(resolution.sessionId, single.session_id);
+  assert.equal(resolution.envSessionMatched, false);
+
+  resolution = await sherpa.resolve(null, 'single');
   assert.equal(resolution.source, 'env');
-  assert.equal(resolution.sessionId, 'env-session');
+  assert.equal(resolution.sessionId, 'single');
+  assert.equal(resolution.envSessionMatched, true);
 
   await sherpa.start({
     sessionId: 'second',
@@ -203,10 +209,20 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
     bouncer.authorizeFileWrite(registry, 'child', path.join(workspaceRoot, 'slots', 'app-alpha', 'src', 'index.ts')),
     {
       allowed: true,
-      reason: 'delegated-child',
+      reason: 'delegated',
       session_id: 'child',
       resource_id: 'app-alpha',
-      owner_session_id: 'owner'
+      owner_session_id: 'owner',
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: 1000,
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-alpha',
+      invalid_slot_dir: null,
+      session_known: null
     }
   );
 
@@ -217,7 +233,17 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       reason: 'unrelated-session',
       session_id: 'intruder',
       resource_id: 'app-alpha',
-      owner_session_id: 'owner'
+      owner_session_id: 'owner',
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: 1000,
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-alpha',
+      invalid_slot_dir: null,
+      session_known: null
     }
   );
 
@@ -228,7 +254,17 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       reason: 'slot-not-claimed',
       session_id: 'owner',
       resource_id: 'app-beta',
-      owner_session_id: null
+      owner_session_id: null,
+      owner_task: null,
+      owner_branch: null,
+      owner_session_active: null,
+      expired_at: null,
+      claim_stale_after_ms: null,
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-beta',
+      invalid_slot_dir: null,
+      session_known: null
     }
   );
 
@@ -290,7 +326,7 @@ test(
     );
 
     assert.equal(authorization.allowed, true);
-    assert.equal(authorization.reason, 'owner-session');
+    assert.equal(authorization.reason, 'owner');
   }
 );
 
@@ -312,4 +348,158 @@ test('MutationGate reports timeout when lock directory cannot be acquired', asyn
   } finally {
     Date.now = originalNow;
   }
+});
+
+test('the write heartbeat throttle stays inside the claim stale window', async () => {
+  const { claimHeartbeatThrottleMs } = await import('../packages/core/dist/service.js');
+  const { CLAIM_WRITE_HEARTBEAT_THROTTLE_MS, CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS } =
+    await import('../packages/core/dist/constants.js');
+
+  // A long window keeps the default cap; a short one scales down so several refreshes fit inside
+  // it, which is what stops a 3 s claim expiring between two authorized writes.
+  assert.equal(claimHeartbeatThrottleMs(60 * 60 * 1000), CLAIM_WRITE_HEARTBEAT_THROTTLE_MS);
+  assert.equal(claimHeartbeatThrottleMs(3000), 1000);
+  assert.equal(claimHeartbeatThrottleMs(40_000), 10_000);
+  // Never below the floor, and an unusable value falls back to the default.
+  assert.equal(claimHeartbeatThrottleMs(100), CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS);
+  for (const bad of [null, undefined, 0, -1, Number.NaN]) {
+    assert.equal(claimHeartbeatThrottleMs(bad), CLAIM_WRITE_HEARTBEAT_THROTTLE_MS, String(bad));
+  }
+});
+
+test('a session touch is a no-op once the session has ended', async () => {
+  const root = await makeTempDir('docko-touch-ended-');
+  const sherpa = new SessionSherpa(root);
+
+  await sherpa.start({ sessionId: 'ses_x', runtime: 'shell', workspaceRoot: root });
+  const ended = await sherpa.end('ses_x');
+  const endedPath = path.join(root, 'docko', 'sessions', 'ended', 'ses_x.json');
+  const before = await readFile(endedPath, 'utf8');
+
+  // Ended manifests are deleted by file age, so a touch here would restart their retention clock.
+  const touched = await sherpa.touch('ses_x');
+  assert.equal(touched.updated_at, ended.updated_at);
+  assert.equal(await readFile(endedPath, 'utf8'), before);
+});
+
+test('a future-dated owner stamp never wedges the lock', async () => {
+  const root = await makeTempDir('docko-lock-skew-');
+  const lockDir = path.join(root, '.registry.lock');
+  await mkdir(lockDir);
+  // Regression: staleness was measured from acquired_at alone, so a clock-skewed stamp made every
+  // command fail with REGISTRY_LOCK_TIMEOUT until someone deleted the directory by hand.
+  await writeFile(
+    path.join(lockDir, 'owner.json'),
+    JSON.stringify({ pid: 999999, hostname: 'ghost', acquired_at: '2030-01-01T00:00:00.000Z' }),
+    'utf8'
+  );
+
+  const gate = new MutationGate(lockDir, { timeoutMs: 3000, staleMs: 5, refreshMs: 60_000 });
+  assert.equal(await gate.run(async () => 'recovered'), 'recovered');
+  assert.equal(existsSync(lockDir), false);
+});
+
+test('a live lock holder is not broken by a waiter', async () => {
+  const root = await makeTempDir('docko-lock-live-');
+  const lockDir = path.join(root, '.registry.lock');
+
+  // The refresh runs 20x more often than the stale window, so a loaded machine cannot make a live
+  // holder look abandoned.
+  const holder = new MutationGate(lockDir, { timeoutMs: 5000, staleMs: 800, refreshMs: 40 });
+  const waiter = new MutationGate(lockDir, { timeoutMs: 900, staleMs: 800, refreshMs: 40 });
+  let waiterEnteredLock = false;
+
+  await holder.run(async () => {
+    // The holder outlives the stale window several times over; its refresh keeps it fresh.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await assert.rejects(
+      () =>
+        waiter.run(async () => {
+          waiterEnteredLock = true;
+        }),
+      /Timed out waiting for registry lock/
+    );
+    // Still ours, so the pre-write guard stays silent.
+    await holder.assertStillHeld();
+  });
+
+  assert.equal(waiterEnteredLock, false);
+});
+
+test('a holder whose lock was broken refuses to write', async () => {
+  const root = await makeTempDir('docko-lock-lost-');
+  const lockDir = path.join(root, '.registry.lock');
+  const abandoned = new MutationGate(lockDir, { timeoutMs: 5000, staleMs: 10, refreshMs: 60_000 });
+  const breaker = new MutationGate(lockDir, { timeoutMs: 5000, staleMs: 10, refreshMs: 60_000 });
+
+  await assert.rejects(
+    () =>
+      abandoned.run(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await breaker.run(async () => 'stole it');
+        await abandoned.assertStillHeld();
+      }),
+    (error) => error.code === 'REGISTRY_LOCK_LOST' && error.exitCode === 2
+  );
+});
+
+test('slots containment follows the platform path rules, not string prefixes', async () => {
+  const { isPathInside } = await import('../packages/core/dist/paths.js');
+
+  // Windows: drive-letter case and segment case must not change the answer.
+  assert.equal(isPathInside('C:\\ws\\slots', 'c:/ws/SLOTS/a/x.ts', path.win32), true);
+  assert.equal(isPathInside('C:\\ws\\slots', 'C:\\ws\\slots', path.win32), true);
+  assert.equal(isPathInside('C:\\ws\\slots', 'C:\\ws\\slotsx\\x.ts', path.win32), false);
+  assert.equal(isPathInside('C:\\ws\\slots', 'C:\\ws\\other\\x.ts', path.win32), false);
+  // POSIX stays case-sensitive.
+  assert.equal(isPathInside('/ws/slots', '/ws/SLOTS/a/x.ts', path.posix), false);
+  assert.equal(isPathInside('/ws/slots', '/ws/slots/a/x.ts', path.posix), true);
+  // A child whose name merely starts with '..' is still a child.
+  assert.equal(isPathInside('/ws/slots', '/ws/slots/..hidden/x.ts', path.posix), true);
+  assert.equal(isPathInside('/ws/slots', '/ws/slots/../escape.ts', path.posix), false);
+});
+
+test('the bouncer treats a case-different slots path as managed', () => {
+  const workspaceRoot = process.platform === 'win32' ? 'C:\\ws' : '/ws';
+  const bouncer = new LockBouncer(workspaceRoot);
+
+  assert.equal(bouncer.isInsideSlotsTree(path.join(workspaceRoot, 'slots', 'a', 'x.ts')), true);
+  if (process.platform === 'win32') {
+    // Regression: `===`/startsWith let c:\ws\SLOTS\a\x.ts answer path-not-managed, so the hook
+    // allowed the write.
+    assert.equal(bouncer.isInsideSlotsTree('c:\\ws\\SLOTS\\a\\x.ts'), true);
+    assert.equal(
+      bouncer.findManagedSlot(
+        { resources: [{ resource_type: 'slot', resource_id: 'a', path: 'slots/a', status: 'free' }] },
+        'c:\\ws\\SLOTS\\a\\x.ts'
+      )?.resource_id,
+      'a'
+    );
+  }
+});
+
+test('a write into a slot directory with an unusable name is denied, not allowed', () => {
+  const workspaceRoot = process.platform === 'win32' ? 'C:\\ws' : '/ws';
+  const bouncer = new LockBouncer(workspaceRoot);
+  const registry = { resources: [] };
+
+  const denied = bouncer.authorizeFileWrite(
+    registry,
+    'ses_1',
+    path.join(workspaceRoot, 'slots', 'my slot', 'index.ts'),
+    { ignoredSlotDirs: ['slots/my slot'], sessionKnown: true }
+  );
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.reason, 'slot-not-claimed');
+  assert.equal(denied.invalid_slot_dir, 'slots/my slot');
+  assert.equal(denied.session_known, true);
+
+  // A path that is not under an ignored directory is unaffected.
+  const allowed = bouncer.authorizeFileWrite(registry, 'ses_1', path.join(workspaceRoot, 'README.md'), {
+    ignoredSlotDirs: ['slots/my slot']
+  });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.reason, 'path-not-managed');
+  assert.equal(allowed.invalid_slot_dir, null);
+  assert.equal(allowed.session_known, null);
 });

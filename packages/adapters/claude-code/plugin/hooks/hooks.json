@@ -1,12 +1,11 @@
 {
-  "description": "docko Claude Code hooks for slot claims, teammate inheritance, and session cleanup",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" session-start",
             "timeout": 60
           }
         ]
@@ -17,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" session-end",
             "timeout": 15
           }
         ]
@@ -29,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" pre-tool-use",
             "timeout": 30
           }
         ]
@@ -40,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" subagent-start",
             "timeout": 30
           }
         ]

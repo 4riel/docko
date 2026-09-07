@@ -166,6 +166,22 @@
             }
           ]
         },
+        "auto_acquire": {
+          "type": "boolean",
+          "description": "Optional. When false, `slot acquire` rotation skips this slot; an explicit claim or --prefer still reaches it. Omitted means true.",
+          "default": true
+        },
+        "last_claim": {
+          "description": "Optional record of the last claim released from this resource. Written on manual, forced, session-end, and stale releases so a denied write can explain why the resource is free.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/lastClaim"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "delegations": {
           "type": "array",
           "description": "Resource-scoped child authority records. The array is typically empty when the resource is free.",
@@ -241,6 +257,34 @@
         "release_reason": {
           "type": ["string", "null"],
           "description": "Null while the claim is active. Release snapshots may use values such as manual, force-release, or stale-recovery."
+        }
+      },
+      "additionalProperties": true
+    },
+    "lastClaim": {
+      "type": "object",
+      "required": ["owner_session_id", "released_at", "reason"],
+      "properties": {
+        "owner_session_id": {
+          "$ref": "#/$defs/safeId"
+        },
+        "released_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the claim ended: manual, force-release, session-end, or stale-recovery."
+        },
+        "branch": {
+          "type": ["string", "null"]
+        },
+        "task": {
+          "type": ["string", "null"]
+        },
+        "stale_after_ms": {
+          "type": ["integer", "null"],
+          "minimum": 1
         }
       },
       "additionalProperties": true
