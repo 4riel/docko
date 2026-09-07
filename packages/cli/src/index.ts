@@ -747,7 +747,15 @@ function parseEnum<T extends string>(raw: string, allowed: readonly T[], label: 
 }
 
 function quoteCliArgument(value: string): string {
-  return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+  if (!/[\s"]/.test(value)) {
+    return value;
+  }
+  // Windows paths must stay readable, so only backslashes that would swallow a quote are doubled:
+  // runs before an embedded quote and a trailing run before the closing quote we add.
+  const escaped = value
+    .replace(/(\\*)"/g, (_match, slashes: string) => `${slashes}${slashes}\\"`)
+    .replace(/(\\+)$/, (_match, slashes: string) => `${slashes}${slashes}`);
+  return `"${escaped}"`;
 }
 
 // Re-render the current invocation with an explicit --session so a blocked agent can copy one

@@ -1769,6 +1769,22 @@ test('CLI renders a copy-pastable retry for an ambiguous session', async () => {
     cli.buildSuggestedCommand(['claim', '--task', 'ship it'], 'ses_new'),
     'docko claim --task "ship it" --session ses_new'
   );
+  // Quotes are escaped without mangling Windows paths, and a backslash cannot swallow the
+  // closing quote: only runs before a quote (embedded or closing) are doubled.
+  assert.equal(
+    cli.buildSuggestedCommand(['claim', '--root', 'C:\\My Work\\ws', '--task', 'say "hi"'], 'ses_new'),
+    'docko claim --root "C:\\My Work\\ws" --task "say \\"hi\\"" --session ses_new'
+  );
+  // A trailing backslash is doubled so it cannot escape the closing quote.
+  assert.equal(
+    cli.buildSuggestedCommand(['claim', '--root', 'C:\\My Work\\'], 'ses_new'),
+    'docko claim --root "C:\\My Work\\\\" --session ses_new'
+  );
+  // A backslash already in front of a quote is doubled too, then the quote is escaped.
+  assert.equal(
+    cli.buildSuggestedCommand(['claim', '--task', 'odd \\" quote'], 'ses_new'),
+    'docko claim --task "odd \\\\\\" quote" --session ses_new'
+  );
 
   const ambiguous = new DockoError('Multiple active sessions found.', 'AMBIGUOUS_SESSION', 3, {
     active_session_count: 2,
