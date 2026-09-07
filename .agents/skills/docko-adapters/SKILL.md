@@ -10,8 +10,9 @@ description: Runtime adapter guidance for the docko repository. Use when working
 - `docs/adapter-spec.md`
 - `docs/claude-code.md`
 - `packages/adapters/claude-code/src/index.ts`
-- `packages/adapters/claude-code/templates/`
-- `tests/claude-code-adapter.test.mjs`
+- `packages/adapters/claude-code/plugin/` (canonical hook launcher, commands, skill, hooks manifest)
+- `packages/adapters/claude-code/templates/project/.claude/snippets/`
+- `tests/claude-code-adapter.test.mjs`, `tests/claude-plugin.test.mjs`
 - For Codex-specific wording, verify `AGENTS.md`, skills, subagents, and hooks claims against official OpenAI docs.
 
 ## Reference model
@@ -26,7 +27,9 @@ description: Runtime adapter guidance for the docko repository. Use when working
 
 - Keep adapters thin and avoid changing ownership semantics in adapter code.
 - Put runtime-specific templates, snippets, and helper assets beside the adapter that owns them.
-- Update templates, examples, docs, and tests together.
+- Update the plugin bundle, snippets, examples, docs, and tests together. The bundle is the single source for the launcher, commands, and skill; the repo-local installer copies from it, and this repository's own `.claude-plugin/docko` and `.claude` assets must stay identical to it.
+- Keep the two install paths in sync: matchers, timeouts, and subcommands are asserted against `plugin/hooks/hooks.json`.
+- Bump the launcher's `// docko-launcher-version:` header with the packages (`scripts/bump-version.mjs` does it).
 - If runtime-specific commands are added to the CLI, document them in `docs/cli-reference.md`.
 - For Codex or OpenAI-specific guidance, verify against official OpenAI docs before writing instructions.
 - For future runtimes, keep design notes clearly labeled as future or guidance-only until implementation exists.
