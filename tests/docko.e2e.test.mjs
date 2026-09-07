@@ -1554,8 +1554,13 @@ test('pre-tool-use rejects a spoofed or missing session id even if the claim exi
     input: JSON.stringify({ file_path: 'slots/app-alpha/file.ts' })
   });
 
-  assert.equal(auth.code, 4);
-  assert.match(auth.stderr, /SESSION_NOT_FOUND/);
+  // The hook answers instead of failing — a failure would make the fail-open launcher allow the
+  // write — but a session docko does not know owns nothing, so the claim does not cover it.
+  assert.equal(auth.code, 0);
+  const denied = parseStdout(auth);
+  assert.equal(denied.allow, false);
+  assert.equal(denied.reason, 'unrelated-session');
+  assert.equal(denied.session_known, false);
 });
 
 test('session current supports id-only output and session list excludes ended sessions', async () => {
@@ -2104,4 +2109,128 @@ test('session current refuses an ended session through the CLI', async () => {
   const current = await runCli(['session', 'current', '--root', root, '--session', 'ses_done']);
   assert.equal(current.code, 4);
   assert.equal(JSON.parse(current.stderr).error.code, 'SESSION_NOT_FOUND');
+});
+
+test('resource ensure pins a claimed slot and leaves other resources their path', async () => {
+  const root = await makeWorkspace('docko-ensure-pin-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_pin']);
+  await runCli(['claim', '--root', root, '--session', 'ses_pin', '--resource', 'slot', '--id', 'app-alpha']);
+
+  // Regression: an absent --path arrived as null and read as "change the path", so pinning a
+  // claimed slot failed with RESOURCE_MUTATION_DENIED.
+  const pinned = await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--no-auto-acquire'
+  ]);
+  assert.equal(pinned.code, 0);
+  assert.equal(parseStdout(pinned).auto_acquire, false);
+
+  // And the same null used to wipe the path of every non-slot resource.
+  await runCli([
+    'resource',
+    'ensure',
+    '--root',
+    root,
+    '--resource',
+    'shared-env',
+    '--id',
+    'staging',
+    '--path',
+    'envs/staging'
+  ]);
+  const reensured = parseStdout(
+    await runCli(['resource', 'ensure', '--root', root, '--resource', 'shared-env', '--id', 'staging'])
+  );
+  assert.equal(reensured.path, 'envs/staging');
+});
+
+test('a slot directory with an unusable name is ignored by discovery and denied by the hook', async () => {
+  const root = await makeWorkspace('docko-invalid-slot-');
+  await runCli(['init', '--root', root]);
+  await mkdir(path.join(root, 'slots', 'my slot'), { recursive: true });
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_inv']);
+
+  const status = parseStdout(await runCli(['status', '--root', root]));
+  assert.equal(
+    status.resources.some((resource) => resource.resource_id === 'my slot'),
+    false
+  );
+  assert.deepEqual(status.ignored_slot_dirs, ['slots/my slot']);
+
+  const brief = parseStdout(await runCli(['status', '--root', root, '--brief']));
+  assert.deepEqual(brief.ignored_slot_dirs, ['slots/my slot']);
+
+  // Regression: with no resource for it, the write used to be answered `path-not-managed`.
+  const auth = parseStdout(
+    await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root, '--session', 'ses_inv'], {
+      input: JSON.stringify({ file_path: path.join(root, 'slots', 'my slot', 'index.ts') })
+    })
+  );
+  assert.equal(auth.allow, false);
+  assert.equal(auth.reason, 'slot-not-claimed');
+  assert.equal(auth.invalid_slot_dir, 'slots/my slot');
+});
+
+test('pre-tool-use uses the payload session id and answers an unknown session', async () => {
+  const root = await makeWorkspace('docko-hook-session-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli(['claim', '--root', root, '--session', 'ses_owner', '--resource', 'slot', '--id', 'app-alpha']);
+
+  const filePath = path.join(root, 'slots', 'app-alpha', 'index.ts');
+
+  // No --session: the payload's own session id has to win over single-active resolution.
+  const owner = parseStdout(
+    await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root], {
+      input: JSON.stringify({ session_id: 'ses_owner', file_path: filePath })
+    })
+  );
+  assert.equal(owner.allow, true);
+  assert.equal(owner.reason, 'owner');
+  assert.equal(owner.session_known, true);
+
+  // Regression: an unregistered session threw SESSION_NOT_FOUND, and the fail-open launcher
+  // turned that into an allowed write.
+  const ghost = await runCli(['adapter', 'claude-code', 'pre-tool-use', '--root', root], {
+    input: JSON.stringify({ session_id: 'ses_ghost', file_path: filePath })
+  });
+  assert.equal(ghost.code, 0);
+  const ghostAuth = parseStdout(ghost);
+  assert.equal(ghostAuth.allow, false);
+  assert.equal(ghostAuth.reason, 'unrelated-session');
+  assert.equal(ghostAuth.session_id, 'ses_ghost');
+  assert.equal(ghostAuth.session_known, false);
+});
+
+test('adapter install refuses a --dest that escapes the workspace root', async () => {
+  const root = await makeWorkspace('docko-dest-guard-');
+  await runCli(['init', '--root', root]);
+
+  const escaped = await runCli([
+    'adapter',
+    'claude-code',
+    'install',
+    '--root',
+    root,
+    '--dest',
+    path.join('..', 'outside')
+  ]);
+  assert.equal(escaped.code, 1);
+  const error = JSON.parse(escaped.stderr).error;
+  assert.equal(error.code, 'USAGE_ERROR');
+  assert.equal(error.option, 'dest');
+  assert.equal(existsSync(path.join(path.dirname(root), 'outside')), false);
+
+  // A destination inside the root is still accepted.
+  const ok = await runCli(['adapter', 'claude-code', 'install', '--root', root, '--dest', 'tools/docko']);
+  assert.equal(ok.code, 0);
+  assert.equal(existsSync(path.join(root, 'tools', 'docko', 'scripts', 'docko-claude-hook.mjs')), true);
 });

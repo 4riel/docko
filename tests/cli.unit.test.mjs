@@ -866,6 +866,8 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
     previous_owner_session_id: null,
     application_id: null,
     slot_path: null,
+    invalid_slot_dir: null,
+    session_known: null,
     workspace_root: '/workspace'
   });
 

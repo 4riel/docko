@@ -611,10 +611,49 @@ test('doctor --fix collapses duplicate registrations and reports the post-fix st
   const repaired = JSON.parse(await readFile(settingsPath, 'utf8'));
   assert.equal(repaired.hooks.SessionStart.length, 1);
   assert.equal(fixed.fixed.length, 1);
+  assert.equal(duplicate.matcher, null);
+  assert.match(duplicate.message, /no matcher/);
   // The report describes the install as it is now, not as it was before --fix ran.
   assert.equal(
     fixed.issues.some((issue) => issue.code === 'DUPLICATE_HOOK_REGISTRATION'),
     false
   );
   assert.equal(fixed.ok, true);
+});
+
+test('doctor --fix keeps a second registration that uses a different matcher', async () => {
+  const { doctorClaudeCodeAdapter, installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  const launcher = path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs');
+  const entry = (matcher) => ({
+    matcher,
+    hooks: [{ type: 'command', command: `node "${launcher}" pre-tool-use`, timeout: 30 }]
+  });
+  const settingsPath = path.join(root, '.claude', 'settings.json');
+  // Regression: dedupe keyed on the event alone deleted the deliberate NotebookEdit registration.
+  await writeFile(
+    settingsPath,
+    `${JSON.stringify(
+      { hooks: { PreToolUse: [entry('Edit|Write'), entry('NotebookEdit'), entry('Edit|Write')] } },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+
+  const sessionEnv = { DOCKO_BIN: 'docko', DOCKO_SESSION_ID: 'ses_x' };
+  const diagnosed = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv });
+  const duplicates = diagnosed.issues.filter((issue) => issue.code === 'DUPLICATE_HOOK_REGISTRATION');
+  assert.equal(duplicates.length, 1);
+  assert.equal(duplicates[0].matcher, 'Edit|Write');
+  assert.match(duplicates[0].message, /matcher Edit\|Write/);
+
+  await doctorClaudeCodeAdapter({ workspaceRoot: root, fix: true, sessionEnv });
+  const repaired = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.deepEqual(
+    repaired.hooks.PreToolUse.map((registration) => registration.matcher),
+    ['Edit|Write', 'NotebookEdit']
+  );
 });

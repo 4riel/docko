@@ -278,6 +278,49 @@ test('hook launcher renders one recovery command per deny reason', async () => {
         /the slot backend\.web_2 is claimed by session ses_owner \(task "ship it", branch feat\/x, still active\)/,
         /docko release .*--session ses_me --resource slot --id backend\.web_2 --force/
       ]
+    },
+    {
+      // Regression: an id with a space rendered as `--prefer my slot`, which the agent could not run.
+      name: 'slot-id-with-space-is-quoted',
+      payload: {
+        allow: false,
+        reason: 'slot-not-claimed',
+        session_id: 'ses_me',
+        resource_id: 'my slot',
+        application_id: 'my app',
+        workspace_root: workspace
+      },
+      expectations: [/--application "my app" --prefer "my slot" /]
+    },
+    {
+      // A directory that can never be claimed must tell the agent to rename it, not to claim it.
+      name: 'invalid-slot-dir',
+      payload: {
+        allow: false,
+        reason: 'slot-not-claimed',
+        session_id: 'ses_me',
+        resource_id: null,
+        invalid_slot_dir: 'slots/my slot',
+        workspace_root: workspace
+      },
+      expectations: [/slots\/my slot is inside the managed slots tree/, /Rename the directory/]
+    },
+    {
+      // An unregistered session owns nothing; the deny has to name the command that registers it.
+      name: 'unknown-session',
+      payload: {
+        allow: false,
+        reason: 'unrelated-session',
+        session_id: 'ses_ghost',
+        resource_id: 'backend.web_2',
+        owner_session_id: 'ses_owner',
+        session_known: false,
+        workspace_root: workspace
+      },
+      expectations: [
+        /session ses_ghost is not registered with docko; the SessionStart hook did not run/,
+        /docko session start .*--session ses_ghost --runtime claude-code/
+      ]
     }
   ];
 
