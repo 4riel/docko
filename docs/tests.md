@@ -1,8 +1,9 @@
-# Test Plan
+# Tests
 
-## Full Gate
+This page lists the test suites under `tests/`, what each one covers, and how to run the gate before
+you open a pull request.
 
-Run the same verification gate used for final integration:
+## Run the gate
 
 ```bash
 pnpm build
@@ -11,78 +12,51 @@ pnpm test
 pnpm test:coverage
 ```
 
-All tests execute against built `dist/` output. The package scripts handle that automatically, but direct `node --test` runs are lower-confidence unless the relevant packages were built first.
+All tests execute against built `dist/` output. `scripts/run-node-tests.mjs` runs every file under
+`tests/` that matches `*.test.mjs`, retrying a failed file once before it fails the gate. Tests run
+sequentially (`--test-concurrency=1`) to avoid CLI child-process contention.
 
-## Current Implemented Suite
+> **Tip:** After `pnpm build`, run one suite directly with `node --test tests/<file>` when you only
+> need a faster signal on the surface you changed.
 
-- `tests/core.unit.test.mjs`: focused unit coverage for errors, filesystem helpers, session resolution, lock ownership, mutation-gate timeout, clock-skew and refresh behavior, `REGISTRY_LOCK_LOST`, platform-correct slots containment, ignored slot directories, the claim heartbeat throttle, and the ended-manifest touch no-op
-- `tests/core.services.test.mjs`: service-layer coverage for registry validation, stale recovery, logs, mirror rendering, resource-catalog defaults, stale-lock quarantine under contention, and the uncapped `session prune` drain
-- `tests/docko.e2e.test.mjs`: end-to-end CLI flows for init, claims, release, delegation, stale recovery, logs, authorization, `resource ensure` without `--path`, ignored slot directories, the hook's payload session id, and the `--dest` guard
-- `tests/cli.unit.test.mjs`: CLI parser and interactive-init coverage, including repeated flags, prompt flows, payload fallbacks, and install edge cases
-- `tests/claude-code-adapter.test.mjs`: Claude adapter settings, installer behavior (launcher refresh on version drift, generated files always refreshed while edited assets are preserved), settings merge, doctor diagnostics including plugin manifest drift and matcher-aware `--fix` deduplication, and real hook command execution
-- `tests/claude-plugin.test.mjs`: distributable plugin bundle — manifests, marketplace entry, hook shapes and timeouts, launcher version header, the repo's own dogfood copies, CLAUDE_ENV_FILE export, per-reason deny messages including argument quoting, invalid slot directories and unregistered sessions, and shipped command/skill guidance
-- `tests/core.persistence.test.mjs`: atomic-write retries, ended-manifest relocation and retention, temp-artifact sweeping on the read path, authorization for undiscovered slot directories, and short-stale-window heartbeats
-- `tests/helpers/cli-test-helpers.mjs`: shared child-process and workspace helpers used by the CLI, adapter, and e2e suites. They strip ambient `DOCKO_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`/`DOCKO_ROOT` so a suite run inside an agent session cannot inherit that session
+## Suites
 
-Coverage is gathered from built package outputs under `packages/*/dist/*.js` so the numbers reflect the shipped CLI, core, and adapter surfaces rather than test-only source paths.
-Package-install coverage runs from fresh temp directories outside the monorepo so npm does not inherit parent workspace context during tarball validation.
+| File | Surface | What it covers |
+| --- | --- | --- |
+| `tests/core.unit.test.mjs` | `packages/core` | Errors, filesystem helpers, session resolution, lock ownership, mutation-gate timeout, clock-skew and refresh behavior, `REGISTRY_LOCK_LOST`, slot containment, ignored slot directories, the claim heartbeat throttle, and the ended-manifest touch no-op. |
+| `tests/core.services.test.mjs` | `packages/core` | Registry validation, stale recovery, logs, mirror rendering, resource-catalog defaults, stale-lock quarantine under contention, and the uncapped `session prune` drain. |
+| `tests/core.persistence.test.mjs` | `packages/core` | Atomic-write retries, ended-manifest relocation and retention, temp-artifact sweeping on the read path, authorization for undiscovered slot directories, and short-stale-window heartbeats. |
+| `tests/cli.unit.test.mjs` | `packages/cli` | The CLI parser and interactive `init`, including repeated flags, prompt flows, payload fallbacks, and install edge cases. |
+| `tests/docko.e2e.test.mjs` | `packages/cli` and `packages/core` | End-to-end CLI flows: init, claims, release, delegation, stale recovery, logs, authorization, `resource ensure` without `--path`, ignored slot directories, the hook payload session id, and the `--dest` guard. |
+| `tests/claude-code-adapter.test.mjs` | `packages/adapters/claude-code` | Adapter settings, installer behavior, settings merge, doctor diagnostics, and real hook command execution. |
+| `tests/claude-plugin.test.mjs` | `packages/adapters/claude-code` plugin bundle | Manifests, the marketplace entry, hook shapes and timeouts, the launcher version header, the repo's own dogfood copies, the `CLAUDE_ENV_FILE` export, per-reason deny messages, and shipped command and skill guidance. |
 
-## Core Functional Cases
+### Notes
 
-- bootstrap from an empty workspace
-- one active session can claim a free slot
-- `slot acquire` rotates through available slots using its round-robin cursor and can duplicate a new managed slot when all current slots are busy
-- many active sessions can claim different slots
-- explicit `--session` resolves ambiguity correctly
-- ambiguous session resolution fails with a clear error
-- owner release succeeds
-- unrelated non-owner release is denied
-- heartbeat refreshes freshness fields
+`tests/helpers/cli-test-helpers.mjs` holds the shared child-process and workspace helpers every suite
+above uses. It strips ambient `DOCKO_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, and `DOCKO_ROOT` so a
+suite run inside an agent session cannot inherit that session.
 
-## Recovery Cases
+## Coverage
 
-- stale workspace claims are released after threshold
-- stale shared env claims are released after threshold
-- fresh session activity keeps an old slot claim alive
-- session-end cleanup releases owned claims
-- crash recovery leaves claims until stale recovery clears them
-- `status` reports janitor-driven releases in `janitor.released_claims`
-- quiet sessions are ended by the janitor and reported in `janitor.ended_sessions`
-- `session prune` previews with `--dry-run`, honors `--max-age-ms`, and never ends a session that still holds a live claim
-- corrupted registry fails fast with a schema error
-- missing session manifest produces a missing-session error
+- `pnpm test:coverage` gathers c8 coverage from `packages/*/dist/*.js`, so the numbers reflect the
+  shipped CLI, core, and adapter surfaces, not test-only source paths.
+- Package-install coverage runs from fresh temp directories outside the monorepo so npm does not
+  inherit parent workspace context during tarball validation.
 
-## Delegation Cases
+## What to add with a change
 
-- delegated teammate is allowed through inherited authority
-- delegated teammate outside scope is denied
-- releasing the parent claim invalidates child access
-- malformed delegation payload is rejected
-- child session without a manifest is rejected
+- Add or extend a case in the suite that owns the surface you changed.
+- When a registry or session field changes, extend the core suite that covers it.
+- When a CLI flag or payload shape changes, extend `tests/cli.unit.test.mjs` or
+  `tests/docko.e2e.test.mjs`.
+- When an adapter-installed file changes, extend `tests/claude-code-adapter.test.mjs` and
+  `tests/claude-plugin.test.mjs` together. The plugin bundle and the repo-local install must stay in
+  sync.
+- When a new test file is added, `scripts/run-node-tests.mjs` picks it up automatically. Name it
+  `<surface>.test.mjs` so it sorts next to the suite it extends.
 
-## Adapter Cases
+## Related
 
-- malformed Claude hook input is ignored or rejected deterministically
-- generated mirror stays in sync after each state-changing command
-- adapter wrappers pass the correct runtime name and session metadata
-
-## Concurrency And Filesystem Cases
-
-- concurrent claim attempts serialize safely
-- atomic writes do not leave partial registry files
-- repeated status reads remain fast with many resources
-- performance-sensitive operations behave predictably on Windows, macOS, and Linux filesystems
-
-## Suggested Test Layers
-
-- unit tests for state transitions
-- schema tests for registry and session manifests
-- integration tests for CLI flows
-- fixture-based adapter tests for Claude payloads
-- cross-platform benchmark tests for registry reads and writes
-
-## Docs Sync Notes
-
-- When command flags or payload shapes change, update `docs/cli-reference.md`, `README.md`, and any affected adapter docs in the same change.
-- When adapter templates move or rename files, update `examples/`, `docs/claude-code.md`, and `docs/docs-sync.md` together.
-- Keep `tests/README.md` aligned with the actual file inventory so contributors can map failures back to the owning layer quickly.
+- [Development](development.md)
+- [Architecture](architecture.md)

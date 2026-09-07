@@ -1,73 +1,80 @@
-# Adapter Specification
+# Adapter specification
 
-## Purpose
+This page documents the contract a runtime adapter must satisfy, and how the Claude Code adapter
+fills it. It is generated from `packages/adapters/claude-code/src/index.ts` and the plugin bundle
+under `packages/adapters/claude-code/plugin/`.
 
-Adapters connect specific runtimes to the protocol without changing the protocol itself.
+## What an adapter is
 
-## Implemented Today
+An adapter connects one runtime to the docko protocol without changing the protocol itself. It
+maps a runtime's own events, such as a session starting or a file write, onto the public `docko`
+CLI. [Concepts](concepts.md) defines the terms an adapter maps onto: session, claim, delegation,
+and stale recovery.
 
-Only Claude Code is a first-class adapter in this repository today.
+Claude Code is the only implemented runtime adapter today. Codex and other `AGENTS.md`-driven
+runtimes use docko as a [guidance-based runtime](agents-md-runtimes.md) instead: the model follows
+written instructions, and nothing enforces them.
 
-That implementation lives in `packages/adapters/claude-code` and currently ships:
+## The Claude Code adapter
 
-- repo-local installer assets under `.claude-plugin/docko/`
-- Claude command files under `.claude/commands/`
-- a Claude skill under `.claude/skills/workspace-orchestration/`
-- mergeable snippets for `CLAUDE.md` and `AGENTS.md`
-- generated Claude settings fragments and merged local settings
-- adapter coverage in `tests/claude-code-adapter.test.mjs`
+The adapter maps four Claude Code hook events onto `docko adapter claude-code` subcommands.
 
-The Claude adapter maps four Claude hook events into the public CLI:
+| Hook event | CLI subcommand | Timeout (seconds) | What it does |
+| --- | --- | --- | --- |
+| `SessionStart` | `adapter claude-code session-start` | 60 | Starts a session and exports `DOCKO_SESSION_ID`, `DOCKO_RUNTIME`, and `DOCKO_ROOT`. |
+| `SessionEnd` | `adapter claude-code session-end` | 15 | Ends the session and releases the claims it owns. |
+| `PreToolUse` | `adapter claude-code pre-tool-use` | 30 | Authorizes a file write against the target path and returns a permission decision. |
+| `SubagentStart` | `adapter claude-code subagent-start` | 30 | Starts a delegated child session and inherits the parent session's active delegations. |
 
-- `SessionStart`
-- `SessionEnd`
-- `PreToolUse`
-- `SubagentStart`
+`PreToolUse` is the only hook with a matcher, and the matcher is `Edit|Write`. The other three
+hooks run on every event of that type.
 
-## Guidance-Only Runtimes
+See [Use docko with Claude Code](claude-code.md) for install steps and what each hook does from a
+Claude Code user's point of view.
 
-The sections below describe design constraints for possible future adapters. They are not shipped implementations unless a matching package, templates, docs, and tests exist.
+## Adapter responsibilities
 
-### Codex
+An adapter:
 
-Codex guidance in this repo is currently manual and docs-driven, not adapter-driven.
+- creates or discovers a runtime session identity, then calls `session start` and `session end`.
+- exposes the current session ID to the runtime, so later commands do not need `--session`.
+- calls the write-authorization check before a write and translates the result into the runtime's
+  own permission model. The check returns an `AuthorizationResult`: `allowed`, `reason`, and the
+  claim fields needed to explain a denial without a second call.
+- registers a delegated child session when the runtime starts a subagent, and inherits the
+  parent's active delegations.
 
-What is true today:
+## Adapter boundaries
 
-- OpenAI documents `AGENTS.md`, project skills, and explicit subagent workflows for Codex.
-- OpenAI also documents hooks for Codex, including Windows-specific command and managed-directory fields.
-- `docko` does not currently ship `packages/adapters/codex`, Codex installer templates, or Codex adapter tests.
+An adapter must not:
 
-So the supported Docko story for Codex today is:
+- change ownership semantics. `owner_session_id` and claim lifetimes stay defined by
+  [the protocol](protocol.md), never by adapter logic.
+- invent a delegation the registry does not record.
+- persist parallel lock state outside `docko/registry.json`.
+- redefine stale recovery. Stale windows and the janitor's recovery logic live in `packages/core`
+  only.
 
-- use `AGENTS.md` and repo skills to teach the workflow
-- use the public `docko` CLI manually from Codex
-- do not document Codex as equivalent to the shipped Claude adapter
+An adapter must fail open: a launcher error or a malformed runtime payload must not block the
+runtime. It only skips docko's authorization for that call.
 
-### Other runtimes
+## Promotion rule
 
-Aider, Cursor, OpenCode, and generic shell/CI notes are planning constraints only until they have real adapter packages and coverage.
+A runtime is documented as an implemented adapter only after all four of these exist:
 
-Examples of valid future adapter behavior:
+1. An adapter package under `packages/adapters/*`.
+2. Installer assets or templates, when the runtime needs them.
+3. Runtime-specific docs.
+4. Tests that verify the runtime-to-protocol mapping.
 
-- create or discover runtime session identity
-- invoke `session start` and `session end` or a runtime-equivalent wrapper
-- expose the current session ID to the runtime
-- optionally run pre-write authorization checks
-- optionally register child sessions for delegated work
+Claude Code has all four: `packages/adapters/claude-code`, the plugin bundle and repo-local
+installer templates, [Use docko with Claude Code](claude-code.md), and
+`tests/claude-code-adapter.test.mjs` plus `tests/claude-plugin.test.mjs`. No other runtime meets
+this bar.
 
-## Promotion Rule
+## Related
 
-Do not present a runtime as first-class support until all of the following exist:
-
-- an adapter package under `packages/adapters/*`
-- installer assets or templates when the runtime needs them
-- runtime-specific docs
-- tests that verify the runtime-to-protocol mapping
-
-## Adapter Boundary Rules
-
-- adapters may enrich metadata
-- adapters may not change ownership semantics
-- adapters may not invent unrecorded delegation
-- adapters should fail clearly on malformed runtime payloads
+- [Use docko with Claude Code](claude-code.md)
+- [Codex and other AGENTS.md runtimes](agents-md-runtimes.md)
+- [Protocol](protocol.md)
+- [Architecture](architecture.md)

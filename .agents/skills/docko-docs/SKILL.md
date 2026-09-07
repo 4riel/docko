@@ -7,7 +7,7 @@ description: Documentation and docs-sync guidance for the docko repository. Use 
 
 ## Read first
 
-- `docs/docs-sync.md`
+- `docs/development.md`
 - `docs/INDEX.md`
 - `README.md`
 - The specific guide or example you are changing
@@ -21,7 +21,7 @@ description: Documentation and docs-sync guidance for the docko repository. Use 
 - Keep examples short, copy-pastable, and clearly marked when they assume POSIX shell behavior.
 - Update indexes and contributor-facing docs when adding new guides.
 - Label runtime examples clearly as one of: shipped Claude asset, manual Codex guidance, or future/planned adapter guidance.
-- Do not present non-Claude runtimes as first-class implementations unless matching packages, templates, and tests exist.
+- Do not present non-Claude runtimes as implemented runtime adapters unless matching packages, templates, and tests exist.
 
 ## Verify
 

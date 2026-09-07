@@ -1,91 +1,91 @@
-# Migration Guide
+# Migrate an existing workflow
 
-## From Ad-Hoc Slot Scripts
+This guide moves an existing coordination workflow onto `docko` without carrying its old habits
+over. It covers four common starting points and how to map their concepts onto docko's.
 
-Replace handwritten lock files and shell conventions with the protocol's explicit state split.
+## From ad hoc lock files
 
-Recommended migration:
+Handwritten lock files and shell conventions get replaced by docko's explicit state split.
 
-1. Create or adopt one workspace root with `slots/` for writable clones.
-2. Initialize `docko` so it creates `docko/registry.json`, `docko/registry.md`, `docko/sessions/`, and `docko/logs/`.
-3. Move resource ownership into `docko claim`, `docko heartbeat`, `docko release`, and `docko delegate`.
-4. Treat `docko/registry.json` as the canonical resource state instead of per-slot marker files.
-5. Treat `docko/sessions/*.json` as the canonical session state instead of inferred process naming or terminal tabs.
-6. Stop editing any human lock summary by hand; let `docko/registry.md` be generated output.
+1. Create or adopt one workspace root with `slots/` for writable clones:
+   `docko init --root ./workspace`.
+2. Move resource ownership into `docko claim`, `docko heartbeat`, `docko release`, and
+   `docko delegate` instead of writing marker files by hand.
+3. Treat `docko/registry.json` as the canonical resource state instead of per-slot marker files. See
+   [state files](state-files.md) for its shape.
+4. Stop editing any hand-maintained lock summary. `docko/registry.md` is generated output; it is
+   never the source of truth.
 
-## From Manual Session Naming Conventions
+## From session naming conventions
 
-If the old workflow inferred identity from shell prompts, tmux panes, or runtime-specific metadata, migrate to explicit session manifests.
+If the old workflow inferred identity from shell prompts, tmux panes, or a runtime's own process
+naming, migrate to explicit session manifests.
 
-Recommended migration:
+1. Start sessions with `docko session start --root ./workspace --runtime <name>`.
+2. Pass the returned `session_id` through the runtime environment (`DOCKO_SESSION_ID`) or an
+   explicit `--session` on every later command.
+3. Use `docko session current --root ./workspace` and `docko session list --root ./workspace`
+   instead of guessing who is active from a terminal tab or a process name.
+4. End sessions with `docko session end` when possible, and let
+   [stale recovery](protocol.md#stale-recovery) handle crashes.
 
-1. Start sessions with `docko session start`.
-2. Pass the returned session ID through the runtime environment or explicit `--session`.
-3. Use `docko session current` and `docko session list` instead of guessing who is active.
-4. End sessions with `docko session end` when possible and let stale recovery handle crashes.
+## From worktree-first workflows
 
-## From Worktree-First Workflows
+`docko` does not replace worktrees for every case. Migrate only the parts of the workflow that
+want persistent slots and explicit multi-agent coordination; see
+[persistent slots compared with git worktrees](why-not-just-worktrees.md) if you have not decided
+yet.
 
-`docko` does not replace worktrees universally. Migrate only when you want persistent workspace slots and explicit multi-agent coordination.
+1. Keep using worktrees for work where cheap, disposable branch checkouts are the only requirement.
+2. Adopt docko slots for the work that wants a stable path, warm caches, or an explicit owner:
+   `docko slot acquire --root ./workspace --branch <branch> --task "<task>" --brief`.
+3. Create a small number of long-lived slots under `slots/` rather than one slot per branch.
+4. Move shared coordination material to the workspace root only when the workflow reads it from
+   there.
 
-Recommended migration:
+## From runtime-specific hook logic
 
-1. Keep using worktrees if cheap branch checkouts are the only problem you need to solve.
-2. Adopt `docko` when you want stable writable clones, warm caches, long-lived local services, or explicit slot ownership.
-3. Create a small number of long-lived slots under `workspace/slots/`.
-4. Move coordination material to the workspace root only when it actually helps the workflow.
+If the current workflow encodes ownership only inside one runtime's hooks or prompt rules, split
+the concerns cleanly.
 
-## From Runtime-Specific Lock Logic
+1. Move claim and release semantics into `docko`'s runtime-neutral CLI, described in
+   [runtime-neutral command surface](protocol.md#runtime-neutral-command-surface).
+2. Keep runtime hooks as adapter glue: starting sessions, requesting write authorization, and
+   automating delegation. See [use docko with Claude Code](claude-code.md) for the reference
+   implementation.
+3. Preserve runtime-specific detail only in claim metadata (`--branch`, `--task`, `--runtime`) or
+   session `metadata`, never as a second source of truth for ownership.
 
-If the current workflow encodes ownership only in one runtime's hooks or prompt rules, split the concerns cleanly.
+## Map old resources onto docko resources
 
-Recommended migration:
+- A persistent writable clone becomes a `slot` resource, discovered automatically from `slots/`.
+- A shared staging environment or a long-lived dev service becomes a `shared-env` resource,
+  registered explicitly:
 
-1. Move claim and release semantics into the runtime-neutral core and CLI.
-2. Keep runtime hooks as adapter glue that starts sessions, requests write authorization, and automates delegation.
-3. Preserve runtime-specific metadata only in session `metadata` or optional claim fields such as `runtime`, `branch`, and `task`.
-4. Do not let adapter-specific rules become a second source of truth for ownership.
+  ```bash
+  docko resource ensure --root ./workspace --resource shared-env --id staging
+  ```
 
-## Migrating Existing Resources
+  ```json
+  { "resource_type": "shared-env", "resource_id": "staging", "path": null, "status": "free" }
+  ```
 
-Map old resource concepts into the protocol deliberately:
+- Anything else becomes a custom resource type, registered the same way with a safe string id.
+- An informal main-and-helper workflow becomes an owner session that claims a resource, then
+  [delegates](delegation.md) it to explicitly started child sessions.
 
-- persistent writable clones become `slot` resources
-- shared staging or dev environments become `shared-env` resources
-- anything else becomes a custom resource type registered with `docko resource ensure`
+## Common corrections
 
-If an existing resource has a meaningful path, store it in the resource record.
-If it is logical rather than filesystem-backed, `path` may be `null`.
+- Do not store session state inside `registry.json`; it belongs in `docko/sessions/`.
+- Do not treat `registry.md` as authoritative; it is generated and best-effort.
+- Do not grant a teammate write access by naming convention alone. Record delegation explicitly with
+  `docko delegate`.
+- Do not bypass the CLI by editing `registry.json` by hand outside deliberate recovery work.
+- Do not assume `branch` claim metadata checks out a branch. `docko` never runs `git checkout`.
 
-## Migrating Delegated Team Workflows
+## Next steps
 
-Leader/teammate workflows should migrate from implied inheritance to explicit records.
-
-Recommended migration:
-
-1. Start the leader as a normal session.
-2. Claim the resource under the leader session.
-3. Start child sessions explicitly.
-4. Delegate the claimed resource to those child sessions.
-5. Treat delegation as resource-scoped write authority, not ownership transfer.
-
-This keeps the registry inspectable and makes child access disappear automatically when the parent claim ends.
-
-## Migrating Stale-Recovery Policy
-
-When moving from handwritten cleanup scripts, set stale policy intentionally instead of relying on habit.
-
-Recommended migration:
-
-1. Decide whether slot claims should use the default 1 hour timeout or a workspace-specific override.
-2. Configure the slot default during `docko init --slot-stale-after-ms <n>` if needed.
-3. Override per-claim stale timeouts only when a task truly needs it.
-4. Let session manifests drive freshness instead of inventing a second heartbeat file.
-
-## Common Corrections During Migration
-
-- Do not store sessions inside `registry.json`; they belong in `docko/sessions/`.
-- Do not treat `registry.md` as the source of truth.
-- Do not grant child write access by parent naming convention alone; record delegation explicitly.
-- Do not mutate the path of a claimed non-slot resource.
-- Do not bypass the CLI by editing `registry.json` manually unless you are doing explicit recovery work and understand the consequences.
+- [Quickstart](quickstart.md): run the claim and release flow end to end.
+- [Application slot pools](applications.md): split a workspace into per-codebase slot pools.
+- [Delegate a slot to a teammate](delegation.md): the explicit delegation workflow in full.
+- [CLI reference](cli-reference.md): every command this guide names.

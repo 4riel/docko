@@ -16,7 +16,7 @@ packages/cli/        JSON CLI over DockoService (single index.ts with all comman
 packages/adapters/claude-code/  Claude Code runtime adapter: plugin bundle, templates, hooks, installer
 schemas/             Canonical JSON Schema for registry.json and session.json
 tests/               Unit, service, e2e, CLI, and adapter tests (Node test runner)
-docs/                Public documentation (21 files, see docs/INDEX.md)
+docs/                Public documentation (20 files, see docs/INDEX.md)
 bin/                 Entry point (docko.js)
 scripts/             Build, test, and publish orchestration
 .agents/skills/      Repo-local skills for Codex and agent runtimes
@@ -117,7 +117,7 @@ Tests run sequentially to avoid CLI child-process contention. Coverage is gather
 - When registry or session shapes change, update schemas, docs, and tests together.
 - When CLI commands or behavior change, update `docs/cli-reference.md` and affected README/examples/adapter docs.
 - Keep implemented behavior separate from roadmap material in docs and templates.
-- Do not present Codex or non-Claude runtime support as first-class unless matching packages, templates, and tests exist.
+- Do not describe Codex or non-Claude runtime support as an implemented runtime adapter unless matching packages, templates, and tests exist.
 - Keep command examples shell-neutral and copy-pastable.
 - Do not document flags, outputs, or flows that are not implemented.
 
@@ -147,7 +147,7 @@ Read `docs/INDEX.md` for the full map. Key references:
 - `docs/cli-reference.md` - all CLI commands and options
 - `docs/claude-code.md` - Claude Code adapter details
 - `docs/adapter-spec.md` - runtime adapter contract
-- `docs/contributing.md` - setup and change expectations
+- `docs/development.md` - setup and change expectations
 - `docs/tests.md` - test plan and coverage inventory
 
 <!-- docko:begin:claude -->

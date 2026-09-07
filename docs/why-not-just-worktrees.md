@@ -1,40 +1,56 @@
-# Why Not Just Worktrees?
+# Persistent slots compared with git worktrees
 
-Git worktrees are good. For many repos they are the better default.
+`docko` and git worktrees both let you work on more than one branch at once. They optimize for
+different things. This page helps you pick.
 
-`docko` exists for a different operating model:
+## What each one optimizes for
 
-- one stable workspace root
-- coordination artifacts at the root when the team needs them
-- multiple persistent full clones under `slots/`
-- agent sessions coordinating against those slots
+Git worktrees optimize for cheap, disposable branch checkouts that share one git object store. You
+create one, use it, and remove it. There is no shared workspace root, no persistent per-worktree
+state, and no built-in session or ownership model. Ownership of a worktree is whoever is looking at
+the terminal.
 
-## When Worktrees Are A Better Fit
+`docko` optimizes for a stable workspace root with persistent writable slots. A slot is a full
+directory under `slots/` that stays in place across sessions, so caches, local config, and
+long-running processes stay attached to one path. The registry records who owns each slot and when
+a delegated teammate may write into it, so ownership is a fact on disk, not a convention.
 
-- you mainly need cheap parallel branch checkouts
-- you do not need a shared workspace hub
-- local setup is light and easy to recreate
-- long-lived per-slot state is not important
+```bash
+docko slot acquire --root ./workspace --branch feat/checkout --task "add checkout flow" --brief
+```
 
-## When Persistent Slots Are Easier
+That command claims the next free slot instead of creating a new directory, so the same slot's
+caches and local state carry over between sessions.
 
-- long-running local servers are tied to a stable directory
-- per-slot env files or local config differ
-- framework caches and native build artifacts are expensive to rebuild
-- IDE state, ports, or local tools are coupled to a full directory
-- teams want warm slots that stay ready between sessions
+## Choose worktrees when
 
-That is the case `docko` serves.
+- You mainly need fast, cheap parallel branch checkouts.
+- You do not need a shared workspace root or explicit session ownership.
+- Local setup is light and easy to recreate from a fresh checkout.
+- Long-lived per-slot state, such as warm caches or a running dev server, is not important.
 
-## The Actual Tradeoff
+## Choose docko when
 
-Worktrees usually win on disk efficiency and fast branch fan-out.
+- Local servers, ports, or IDE state are tied to a stable directory that should not move.
+- Per-slot environment files or local configuration differ between slots.
+- Framework caches or native build artifacts are expensive to rebuild from scratch.
+- More than one agent session works against the same workspace root and needs explicit, inspectable
+  ownership of each writable directory.
 
-Persistent slots usually win when operational stability matters more than minimal checkout cost:
+## The tradeoff
 
-- the path stays stable
-- caches stay warm
-- local state survives across sessions
-- the workspace root becomes a shared coordination surface
+Worktrees win on disk efficiency: one shared git object store, thin per-branch checkouts, and fast
+fan-out. `docko` slots are full directories, so they cost more disk and more time to create.
 
-`docko` is not a universal replacement for worktrees. It is a better fit for the persistent-clone workflow.
+Persistent slots win on operational stability: the path stays stable across sessions, caches stay
+warm, local state survives a restart, and the workspace root becomes a shared coordination surface
+with an inspectable [registry](state-files.md) instead of ad hoc naming conventions.
+
+Neither model is wrong. `docko` is a fit for the persistent-slot workflow, not a replacement for
+worktrees in general.
+
+## Related
+
+- [Concepts](concepts.md)
+- [Migrate an existing workflow](migration-guide.md)
+- [Application slot pools](applications.md)

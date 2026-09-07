@@ -1,637 +1,367 @@
-# Protocol Specification
+# Protocol
 
-## Purpose
+This is the normative specification for docko: what a session, a claim, a delegation, and stale
+recovery mean, and what a conforming implementation must do. It describes the core package that
+every command and every runtime adapter goes through. [State files](state-files.md) documents the
+shapes it writes.
 
-`docko` is a local-first protocol for coordinating writable resources inside one workspace root.
-The protocol is intentionally small:
+## Scope and guarantees
 
-- the canonical machine-readable state lives on disk
-- claims and releases are explicit
-- session identity is explicit
-- stale recovery is cheap and deterministic
-- runtime adapters may automate the workflow, but they do not redefine the rules
+The protocol covers one workspace root and the resources, sessions, claims, and delegations inside
+it. It does not touch the contents of a slot, run git, or coordinate anything across two workspace
+roots.
 
-## Goals
+A conforming implementation guarantees the following.
 
-- runtime-agnostic core semantics
-- cheap filesystem reads and atomic writes
-- explicit ownership and delegation
-- safe crash and stale-session recovery
-- one canonical registry plus separate session manifests
+- The canonical state is on disk. There is no daemon and no background process.
+- Claims and releases are explicit. Ownership never changes as a side effect of reading.
+- Session identity is explicit. Ancestry alone grants nothing.
+- Registry mutations serialize on the registry lock, and every registry and manifest write is
+  atomic.
+- Stale recovery runs before every registry-backed read and write, on the same code path.
+- A runtime adapter may automate the flow and enrich metadata. It never redefines ownership,
+  release, or stale semantics.
 
-## Workspace Layout
+Fatal errors are structured JSON on stderr with a non-zero exit code, and successful payloads are
+JSON on stdout. [Errors](errors.md) lists every code and exit code.
 
-```text
-workspace/
-|-- slots/
-|   |-- main/
-|   |-- backend/
-|   |   |-- main_1/
-|   |   `-- main_2/
-|   `-- frontend/
-|       `-- main_1/
-`-- docko/
-    |-- registry.json
-    |-- registry.md
-    |-- .registry.lock/
-    |   `-- owner.json
-    |-- sessions/
-    |   |-- <session-id>.json
-    |   |-- ...
-    |   `-- ended/
-    |       |-- <session-id>.json
-    |       `-- ...
-    `-- logs/
-        |-- YYYY-MM-DD.jsonl
-        `-- ...
-```
+docko coordinates sessions that cooperate. It is not a security boundary. See
+[Security](../SECURITY.md).
 
-## Canonical Persistence Surfaces
+## Resource model
 
-- `docko/registry.json`: canonical registry for workspace metadata, resources, claims, and delegations
-- `docko/registry.md`: generated human mirror of the registry; best-effort output, never authoritative
-- `docko/sessions/*.json`: one manifest per active session; sessions are not embedded in `registry.json`
-- `docko/sessions/ended/*.json`: manifests of sessions that have ended, kept for the retention window
-- `docko/logs/*.jsonl`: best-effort debug trail for recent operations
-- `docko/.registry.lock/`: filesystem lock directory used to serialize registry mutations
-- `docko/.registry.lock/owner.json`: `{ pid, hostname, acquired_at }` of the process holding the lock
+A resource is anything one session can own exclusively. The protocol recognizes three classes.
 
-## Core Entities
+| Resource type | Enters the registry through | Path |
+| --- | --- | --- |
+| `slot` | Slot discovery under `slots/` | `slots/<slot-id>` or `slots/<application-id>/<slot-name>` |
+| `shared-env` | `docko resource ensure` | Optional, may be `null` |
+| Custom safe id | `docko resource ensure` | Optional, may be `null` |
 
-### Workspace
+The core adds no semantics to a custom resource type beyond claim ownership and stale recovery.
 
-The workspace descriptor lives inside `registry.json` and identifies the managed root:
+### Slot discovery
 
-- `workspace_id`: stable workspace identifier
-- `workspace_root`: absolute path to the managed workspace root
-- `name`: human-facing label
-- `config.janitor.slot_stale_after_ms`: optional default stale timeout for future slot claims
-- `config.janitor.session_stale_after_ms`: optional quiet time after which the janitor ends an active session
-- `config.scheduler.last_slot_id`: round-robin cursor for `slot acquire`, keyed by application id (or a default key for flat slot pools). Each entry records the last slot id claimed so the next acquire starts after it, leaving the just-released slot last in the ring
+Slot resources are discovered from `slots/*` on every registry mutation path, so a directory created
+since the last write is seen by the operation that follows it.
 
-### Session Manifest
-
-Each session is stored as its own file under `docko/sessions/`.
-The manifest shape is runtime-agnostic even when an adapter populates it.
-
-```json
-{
-  "schema_version": "0.1.0",
-  "session_id": "ses_123",
-  "runtime": "claude-code",
-  "actor_mode": "delegated",
-  "parent_session_id": "ses_parent",
-  "delegated_from_session_id": "ses_parent",
-  "started_at": "2026-03-21T08:11:22.000Z",
-  "updated_at": "2026-03-21T08:15:11.000Z",
-  "ended_at": null,
-  "workspace_root": "/Users/example/workspace",
-  "metadata": {
-    "pid": 12345,
-    "hostname": "mbp.local"
-  }
-}
-```
-
-Semantics:
-
-- `session_id` must be unique among active sessions
-- `actor_mode` is one of `interactive`, `delegated`, or `automation`
-- `parent_session_id` records the parent session when the runtime started this session under another
-- `delegated_from_session_id` records the session that delegated authority to this session when applicable
-- `ended_at: null` means active; ended sessions remain on disk until explicitly cleaned up
-- `updated_at` is the freshness signal used by stale recovery
-- `metadata` is open-ended and may contain runtime-specific fields
-
-### Registry Document
-
-The registry tracks workspace-level state only. It does not inline session manifests.
-
-```json
-{
-  "schema_version": "0.1.0",
-  "generated_at": "2026-03-21T08:15:11.000Z",
-  "workspace": {
-    "workspace_id": "wk_123",
-    "workspace_root": "/Users/example/workspace",
-    "name": "workspace",
-    "config": {
-      "janitor": {
-        "slot_stale_after_ms": 14400000,
-        "session_stale_after_ms": 28800000
-      },
-      "scheduler": {
-        "last_slot_id": {
-          "_default": "main"
-        }
-      }
-    }
-  },
-  "applications": [
-    {
-      "application_id": "backend",
-      "name": "Backend",
-      "description": "Backend API service",
-      "keywords": ["backend", "api"],
-      "source_path": "/Users/example/code/backend"
-    }
-  ],
-  "resources": [
-    {
-      "resource_type": "slot",
-      "resource_id": "backend.main_1",
-      "path": "slots/backend/main_1",
-      "application_id": "backend",
-      "slot_name": "main_1",
-      "status": "claimed",
-      "claim": {
-        "owner_session_id": "ses_123",
-        "runtime": "claude-code",
-        "branch": "feat/protocol",
-        "task": "document the protocol",
-        "claimed_at": "2026-03-21T08:12:00.000Z",
-        "updated_at": "2026-03-21T08:15:11.000Z",
-        "heartbeat_at": "2026-03-21T08:15:11.000Z",
-        "stale_after_ms": 14400000,
-        "release_reason": null
-      },
-      "last_claim": {
-        "owner_session_id": "ses_previous",
-        "released_at": "2026-03-21T08:11:00.000Z",
-        "reason": "stale-recovery",
-        "branch": "feat/previous",
-        "task": "previous task",
-        "stale_after_ms": 14400000
-      },
-      "delegations": [
-        {
-          "child_session_id": "ses_child",
-          "granted_by_session_id": "ses_123",
-          "granted_at": "2026-03-21T08:13:01.000Z",
-          "scope": "write"
-        }
-      ]
-    }
-  ]
-}
-```
-
-## Resource Model
-
-### Resource Types
-
-The core recognizes three contract-level resource classes:
-
-- `slot`: a writable directory under `slots/`
-- `shared-env`: a named shared environment such as staging or a long-lived service
-- `custom`: any other runtime-neutral resource type registered explicitly
-
-Custom resource types are allowed as safe string identifiers. The core does not hardcode extra semantics for them beyond claim ownership and stale recovery.
-
-A slot may carry `auto_acquire: false`. Round-robin selection (`slot acquire`) skips such a slot; an explicit claim or `--prefer` still reaches it. The field is only written for the opt-out (omitted means `true`) and survives slot rediscovery.
+- A flat slot is tracked at `slots/<slot-id>` with `resource_id` `<slot-id>`.
+- An application slot is tracked at `slots/<application-id>/<slot-name>` with `resource_id`
+  `<application-id>.<slot-name>`, plus `application_id` and `slot_name`.
+- A free slot resource whose directory no longer exists is dropped from the registry.
+- A claimed slot resource whose directory is missing is preserved, so ownership is never discarded
+  silently.
+- A directory whose name is not a valid resource id is skipped, reported as `ignored_slot_dirs`, and
+  writes into it are denied. Rename the directory to make it claimable.
+- A slot with `auto_acquire: false` is skipped by `docko slot acquire` rotation and stays reachable
+  by an explicit claim or by `--prefer`. The field survives rediscovery.
 
 ### Applications
 
-Applications are optional workspace-level descriptors stored in the registry.
+An application is an optional workspace-level descriptor that gives a set of slots its own pool. It
+carries `application_id`, `name`, `description`, `keywords`, and `source_path`.
 
-They let one workspace define multiple slot pools such as `backend` and `frontend`, each with:
+An implementation may match an application's `keywords` against `--task` and `--branch` text to
+infer which pool an acquire belongs to. Registering an application whose id collides with an
+existing flat slot is refused unless that slot is free and its directory already holds nested slot
+directories.
 
-- `application_id`
-- `name`
-- `description`
-- `keywords`
-- `source_path`
+### Non-slot resources
 
-The CLI may use those keywords to infer the correct application when the task text clearly says things like "update backend auth" or "refresh frontend landing page".
+`shared-env` and custom resources are never auto-discovered. `docko resource ensure` may change the
+path of an existing non-slot resource only while that resource is free, and may not redefine a slot
+path.
 
-### Resource Identity
+## Session lifecycle
 
-`resource_type`, `resource_id`, and `session_id` must match the safe ID rule used by the core:
-
-- start with a word character
-- continue with word characters, `-`, or `.`
-- never contain `..`
-
-### Slot Discovery
-
-Slot resources are discovered from `workspace/slots/*`.
-
-Rules:
-
-- `init`, `status`, `claim`, `release`, `delegate`, `heartbeat`, `render`, and write-authorization all run through the same registry mutation path
-- that path re-discovers slot directories before it reads or writes registry state
-- free slot resources that no longer exist on disk are removed from the registry
-- claimed slot resources are preserved in the registry even if the directory is currently missing, so ownership is not silently discarded
-- legacy flat slots are tracked as `slots/<slot-id>` with `resource_id: "<slot-id>"`
-- application-aware slots are tracked as `slots/<application-id>/<slot-name>` with `resource_id: "<application-id>.<slot-name>"`
-- application-aware slots also record `application_id` and `slot_name`
-- a slot or application directory whose name is not a valid resource id is skipped: it would be discovered but never claimable, which left writes into it denied forever. Skipped directories are reported as `ignored_slot_dirs` in the status payload, and writes into them are still denied — the fix is to rename the directory
-
-### Non-Slot Resources
-
-`shared-env` and custom resources enter the registry only through `docko resource ensure`.
-
-Rules:
-
-- they are not auto-discovered from the filesystem
-- `path` may be `null`
-- `resource ensure` may update the path of an existing non-slot resource only while that resource is free
-- `resource ensure` does not let callers redefine slot paths
-
-## Session Lifecycle
+A session is a runtime execution identity. Every claim, release, delegation, and write check names
+one.
 
 ### Start
 
-`docko session start` creates a manifest file and returns a session identifier.
-
-Rules:
-
-- if `--session` is omitted, the core generates a `ses_<uuid>` identifier
-- reusing an active session ID is an ownership conflict
-- when `parent_session_id` is supplied, the parent session must already exist and still be active
+`docko session start` writes a manifest and returns its identifier. The core generates
+`ses_<uuid>` when you pass no `--session`. Reusing the id of an active session is a conflict, and a
+supplied `parent_session_id` must name a session that already exists and is still active.
 
 ### Resolve
 
-Commands that need a session resolve it in this order:
+A command that needs a session resolves one in this order.
 
-1. explicit `--session`
-2. the environment session id (`DOCKO_SESSION_ID`), but only when it names an active session
-3. the only active session in `docko/sessions/`
+1. An explicit `--session <id>`.
+2. `DOCKO_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID`, but only when the value names an active
+   session.
+3. The single active session in `docko/sessions/`.
 
-An environment id that matches no active session is ignored rather than fatal: a runtime that
-exports a session id docko never saw still resolves through single-active resolution.
-
-If no active session exists, the command fails with `NO_ACTIVE_SESSION`.
-If more than one active session exists and neither an explicit nor a matching environment id is
-available, the command fails with `AMBIGUOUS_SESSION`.
-
-The `AMBIGUOUS_SESSION` payload carries:
-
-- `active_session_count`: how many sessions are active
-- `active_sessions`: the 10 most recently updated candidates, newest first
-- `newest_session_id`: the newest interactive candidate, for a copy-pastable `--session <id>`
-- `next_steps`: safe recovery steps that never suggest ending unrelated sessions
-- `resolution`: the explicit and environment ids that were considered
-
-### Current And List
-
-- `docko session current` returns the resolved session and refreshes `updated_at`
-- `docko session list` returns only active sessions
+An environment id that matches no active session is ignored rather than fatal, so a runtime that
+exports an id docko never saw still resolves through the single-active rule. With no active session
+the command fails with `NO_ACTIVE_SESSION`; with more than one and no usable id it fails with
+`AMBIGUOUS_SESSION`, whose payload carries the candidates and a copy-pastable retry.
 
 ### End
 
-`docko session end` is the normal shutdown path.
+`docko session end` is the normal shutdown path. It releases every claim the session owns with
+reason `session-end`, ends any session whose `parent_session_id` or `delegated_from_session_id`
+names it, stamps `ended_at`, and moves the manifest to `docko/sessions/ended/`. It never deletes a
+manifest.
 
-Rules:
-
-- it releases every claim owned by that session
-- it ends any delegated child sessions whose `parent_session_id` or `delegated_from_session_id` matches the ending session
-- if the manifest file exists, it marks the manifest with `ended_at` and updates `updated_at`
-- it moves the manifest to `docko/sessions/ended/`, so the hot directory only holds live sessions
-- it does not delete the manifest
-
-Ended manifests are read back by `session current` and by any lookup of a specific session id.
-They are removed only by the retention sweep described in [Prune](#prune).
+An ended manifest is still readable by a lookup of that specific id. Only the retention sweep
+removes it.
 
 ### Prune
 
-`docko session prune` is the recovery path for sessions that never ran `session end`, and the
-reclaim path for ended manifests on disk.
+`docko session prune` runs the session half of stale recovery on demand and reclaims ended manifests
+past the retention window. `--max-age-ms` overrides the workspace session stale window for that run,
+`--retention-ms` overrides the manifest retention window, and `--dry-run` reports both sets without
+writing. Prune judges each session on its own quiet time and does not cascade to delegated children.
 
-Rules:
+## Claim lifecycle
 
-- it applies the same session janitor pass described in [Stale Recovery](#stale-recovery)
-- `--max-age-ms <n>` overrides the workspace session stale window for that run only
-- it deletes ended manifests older than the retention window (default `604800000`, seven days)
-- the result reports `retention_ms` and `deleted_manifests`
-- `--dry-run` reports the sessions that would be ended and the manifests that would be deleted, and writes nothing
-- it does not cascade to delegated children; each session is judged on its own quiet time
-
-## Claim Lifecycle
+A claim is the record that one session owns one resource. There is at most one claim per resource.
 
 ### Claim
-
-A successful claim records exactly one owner:
 
 ```text
 free -> claimed
 ```
 
-On claim:
+The session must exist and be active, and the resource must be free after stale recovery has run in
+the same pass. On success the resource becomes `claimed` and the claim records the owner, the
+runtime (explicit, or inherited from the owner session), `claimed_at`, `updated_at`, and
+`heartbeat_at` at the current time, the resolved `stale_after_ms`, and `release_reason: null`. Any
+existing delegations are cleared.
 
-- the session must exist and be active
-- the resource must be free after stale cleanup has already run
-- the resource becomes `claimed`
-- `claim.owner_session_id` is set to the claiming session
-- `claim.runtime` is set from the explicit claim option, or inherited from the owning session's runtime
-- `claim.claimed_at`, `claim.updated_at`, and `claim.heartbeat_at` are initialized to the current timestamp
-- `claim.release_reason` is reset to `null`
-- existing delegations are cleared
+> **Note:** `branch` and `task` are claim metadata. docko records them and never runs
+> `git checkout`, and a claim reserves a slot rather than a branch, a pull request, or a file.
 
 ### Heartbeat
-
-`docko heartbeat` is an owner-only update:
 
 ```text
 claimed -> claimed
 ```
 
-It refreshes:
+`docko heartbeat` is owner-only. It refreshes `claim.updated_at`, `claim.heartbeat_at`, and the
+owner's session `updated_at`.
 
-- `claim.updated_at`
-- `claim.heartbeat_at`
-- the session manifest `updated_at`
-
-An authorized file write inside a claimed slot refreshes the same fields implicitly, so active
-work never goes stale while it is happening. That refresh is throttled, and the throttle scales
-with the claim's own stale window so a short window still gets several refreshes inside it:
+An authorized file write inside a claimed slot refreshes the same fields, so work in progress never
+goes stale while it is happening. That refresh is throttled, and the throttle scales with the
+claim's own stale window, so even a short window is refreshed well before it expires.
 
 ```text
-throttle = min(30_000, max(1_000, floor(claim.stale_after_ms / 4)))
+throttle = min(30000, max(1000, floor(claim.stale_after_ms / 4)))
 ```
 
 Between refreshes the registry is left untouched.
 
 ### Release
 
-Normal release is owner-only:
-
 ```text
 claimed -> free
 ```
 
-Rules:
+Release is owner-only unless you pass `--force`. The resource is reset to `status: "free"`,
+`claim: null`, and `delegations: []`, and the released claim is recorded as `last_claim` with its
+reason. The command returns a snapshot of the previous claimed state.
 
-- the registry record is cleared back to `status: "free"`, `claim: null`, and `delegations: []`
-- the released claim is recorded on the resource as `last_claim` with the release reason
-- the command response returns a snapshot of the previous claimed state
-- that snapshot uses `release_reason: "manual"` by default
-- `--reason <text>` overrides the release reason in the returned snapshot
-- `--force` allows a non-owner to recover the resource and defaults the returned reason to `"force-release"` when no explicit reason is supplied
+The reason is `manual` by default, `force-release` when `--force` is used without an explicit
+reason, and whatever `--reason <text>` says when you supply one.
 
-## Ownership And Delegation
+> **Warning:** `--force` takes a slot from a live session and clears its delegations. Use it for
+> deliberate recovery, not as a retry.
 
-### Ownership
+## Ownership and delegation
 
-- every claimed resource has exactly one owner session
-- only the owner can heartbeat the claim
-- only the owner can delegate child authority
-- only the owner can release normally
-- `--force` release is the only built-in non-owner recovery path
+Every claimed resource has exactly one owner session. Only the owner can heartbeat, delegate, or
+release normally, and `--force` release is the only built-in non-owner recovery path.
 
-### Delegation
+Delegation is explicit per resource. It records `child_session_id`, `granted_by_session_id`,
+`granted_at`, and a `scope` of `read` or `write`.
 
-Delegation is explicit per resource. Session ancestry alone does not grant write authority.
+- The granting session must actively own the resource, and the child session must exist and be
+  active.
+- Delegation never changes `owner_session_id`.
+- Granting to the same child again updates the existing record instead of adding a duplicate.
+- `read` is informational in the core contract and authorizes no file write.
+- File-write authorization accepts the owner session or a child delegated with `scope: "write"`.
 
-Each delegation records:
+Child authority lives only as long as the parent claim. It ends the moment the owner releases, the
+janitor recovers the claim, or session-end cleanup runs.
 
-- `child_session_id`
-- `granted_by_session_id`
-- `granted_at`
-- `scope`: `read` or `write`
+## Stale recovery
 
-Rules:
+Stale recovery runs before every registry-backed read and write, inside the registry lock. It
+releases quiet claims first and ends quiet sessions second, so a claim recovered in a pass no longer
+protects the session that abandoned it.
 
-- the parent session must actively own the resource when delegation is granted
-- the child session must exist and be active when delegation is granted
-- delegation never changes `owner_session_id`
-- granting delegation to the same child again updates the existing record instead of creating duplicates
-- `read` delegation is informational in the core contract; it does not authorize file writes
-- file-write authorization accepts only owner sessions or delegated children with `scope: "write"`
+### Claim thresholds
 
-### Delegation Lifetime
+The janitor always compares against the claim's own `stale_after_ms`, which is resolved when the
+claim is taken.
 
-Child authority exists only while the parent claim remains active.
+| Resource type | Resolved stale window |
+| --- | --- |
+| `slot` | `--stale-after-ms`, else `workspace.config.janitor.slot_stale_after_ms`, else `3600000` |
+| `shared-env` | `600000` |
+| Custom safe id | `1800000` |
 
-That means child write access ends immediately when:
+### Freshness
 
-- the owner releases the claim
-- stale recovery clears the claim
-- session-end cleanup releases the owner's claims and ends delegated children
+Freshness comes from the latest activity relevant to the resource, in this order.
 
-## Stale Recovery
+1. The newest `updated_at` across the owner session and every delegated child session whose manifest
+   is still active.
+2. `claim.heartbeat_at`.
+3. `claim.updated_at`.
+4. `claim.claimed_at`.
 
-Stale recovery runs before registry-backed reads and writes.
+Active delegated child activity keeps a parent-owned claim fresh. An ended or missing manifest
+counts as no activity, and an unparseable timestamp counts as stale.
 
-### Thresholds
+### Result
 
-Per-claim stale timeout:
+A stale claim is snapshotted with `release_reason: "stale-recovery"`, and the live entry is reset to
+`status: "free"`, `claim: null`, and `delegations: []`. The resource keeps `last_claim` with reason
+`stale-recovery`, which is what lets a later write by the lapsed owner be answered `claim-expired`
+instead of a bare `slot-not-claimed`. `docko status` reports the snapshots under
+`janitor.released_claims`, and the debug log records a `stale-recovery` entry.
 
-- slot: claim value if present, otherwise `workspace.config.janitor.slot_stale_after_ms`, otherwise `3600000`
-- shared-env: `600000`
-- custom and other resource types: `1800000`
+### Stale sessions
 
-### Freshness Source
+The same pass ends active sessions that stopped reporting activity, using the session's `updated_at`
+against `workspace.config.janitor.session_stale_after_ms`, otherwise `28800000`.
 
-Freshness is evaluated from the latest active session activity that is relevant to the resource:
+- Only sessions without `ended_at` are considered, and an unparseable timestamp counts as stale.
+- A session that still owns or is delegated a claim that survived the pass is never ended.
+- Ending a stale session marks and relocates the manifest exactly as `docko session end` does.
+- One pass ends at most 100 sessions. When more remain, `janitor.ended_sessions_truncated` is `true`
+  and the next pass continues.
+- One pass also deletes at most 200 ended manifests older than `604800000` ms, reported as
+  `janitor.deleted_manifests`.
+- `docko status` reports the ended manifests under `janitor.ended_sessions`, and the debug log
+  records a `stale-session-recovery` entry.
 
-1. take the newest `updated_at` across the owner session and any delegated child sessions whose manifests are still active
-2. if no relevant active manifest exists, fall back to the claim timestamps: `heartbeat_at`, then `updated_at`, then `claimed_at`
+## File-write authorization
 
-Important clarifications:
+The write check is deliberately narrow: it answers for paths inside managed slot directories and
+takes no position on anything else. Non-slot resources are outside file-path authorization.
 
-- active delegated child activity can keep a parent-owned claim fresh
-- ended or missing session manifests do not count as fresh activity
-- invalid timestamps are treated as stale
+| Reason | Outcome | Condition |
+| --- | --- | --- |
+| `path-not-managed` | allowed | The path is outside every managed slot. |
+| `owner` | allowed | The acting session owns the claim. |
+| `delegated` | allowed | The acting session holds a `write` delegation on the claim. |
+| `slot-not-claimed` | denied | The slot is free, or its directory name is not a valid resource id. |
+| `claim-expired` | denied | The janitor released this session's claim on the slot. |
+| `unrelated-session` | denied | Another session owns the claim. |
 
-### Recovery Result
+The vocabulary is closed and the core exports it as `AUTHORIZATION_REASONS`.
 
-When a claim is stale:
+The result carries enough context to explain itself without a second call: `session_id`,
+`resource_id`, `owner_session_id`, `owner_task`, `owner_branch`, `owner_session_active`,
+`expired_at`, `claim_stale_after_ms`, `previous_owner_session_id`, `application_id`, `slot_path`,
+`invalid_slot_dir`, and `session_known`.
 
-- the janitor records a snapshot of the pre-release resource with `release_reason: "stale-recovery"`
-- the live registry entry is reset to `status: "free"`, `claim: null`, and `delegations: []`
-- the resource keeps `last_claim` with `reason: "stale-recovery"`, so a later write by the lapsed owner is answered with `claim-expired` instead of a bare `slot-not-claimed`
-- `docko status` reports the released snapshots under `janitor.released_claims`
-- the debug log records a `stale-recovery` entry
+An unregistered or ended session is answered, not rejected. It is evaluated as a session that owns
+nothing, so a write inside `slots/` is denied with its natural reason and `session_known: false`.
+Rejecting it instead let a fail-open adapter allow the write.
 
-### Stale Sessions
+The cost of a check depends on where the path is.
 
-The same janitor pass also ends sessions that stopped reporting activity, so a crashed or abandoned
-runtime does not stay active forever.
+- A path outside the `slots/` tree is answered from an unlocked registry read: no registry lock, no
+  session read, and no registry or session write.
+- A path anywhere under `slots/` takes the locked path, whether or not a resource exists for it yet,
+  because slot discovery runs there.
+- An allowed write by the owner or a delegated child refreshes the claim heartbeat, throttled by the
+  formula in [Claim lifecycle](#claim-lifecycle).
 
-Threshold:
+## Status and mirror semantics
 
-- `workspace.config.janitor.session_stale_after_ms`, otherwise `28800000` (8 hours)
-
-Rules:
-
-- only sessions without `ended_at` are considered, using `updated_at` as the activity source
-- invalid timestamps are treated as stale
-- sessions are evaluated after claim recovery, so a claim released in the same pass no longer protects its owner
-- a session that still owns, or is delegated, a claim that survived the pass is never ended
-- ending a stale session marks and relocates the manifest exactly like `session end` does; the file is not deleted
-- one pass ends at most 100 stale sessions; when more remain, `janitor.ended_sessions_truncated` is `true` and the next pass continues
-- a pass also deletes ended manifests past the retention window, at most 200 per pass, reported as `janitor.deleted_manifests`
-- `docko status` reports the ended manifests under `janitor.ended_sessions`
-- the debug log records a `stale-session-recovery` entry
-
-## File-Write Authorization
-
-The core write-authorization check is intentionally narrow.
-
-Rules:
-
-- it applies only to paths inside managed slot directories
-- non-slot resources are not part of file-path authorization
-- paths outside managed slots are allowed with reason `path-not-managed`
-- writes into a free slot are denied with reason `slot-not-claimed`
-- writes into a slot whose claim the janitor released, by the session that held it, are denied with reason `claim-expired`
-- writes by the owner are allowed with reason `owner`
-- writes by a child with explicit `write` delegation are allowed with reason `delegated`
-- all other writes into a claimed slot are denied with reason `unrelated-session`
-
-The reason vocabulary is closed. Core exports it as `AUTHORIZATION_REASONS`.
-
-The result carries enough context to explain itself:
-
-- `session_id`, `resource_id`, `owner_session_id`
-- `owner_task`, `owner_branch`: what the owner is doing
-- `owner_session_active`: whether the owner session is still active, or `null` when unknown
-- `expired_at`: when the lapsed claim was released, for `claim-expired`
-- `claim_stale_after_ms`: the stale window of the current or last claim
-- `previous_owner_session_id`: who held the slot last, when it is currently free
-- `application_id` and `slot_path`: the slot's identity, so an adapter can render a usable retry command
-- `invalid_slot_dir`: the offending directory when the write targets a slot directory whose name is not a valid resource id
-- `session_known`: whether the acting session is registered and active. `false` means the runtime's SessionStart hook never ran, so the session owns nothing; `null` on the unlocked fast path, which does not read session state
-
-An unregistered or ended session is answered, not rejected: it is evaluated as a session with no
-claims and no delegations, so a write inside `slots/` is denied with its natural reason and
-`session_known: false`. Failing the check instead let a fail-open adapter allow the write.
-
-Cost model:
-
-- a path outside the workspace's `slots/` tree is answered from an unlocked registry read: no registry lock, no session read, and no registry or session writes (abandoned temp artifacts are still swept)
-- a path anywhere under `slots/` takes the normal locked path, whether or not a resource exists for it yet: slot discovery runs there, so a directory created since the last mutation is answered as the unclaimed slot it is, not as an unmanaged path
-- an allowed write by the owner or a delegate refreshes the claim heartbeat, throttled to `min(30_000, max(1_000, floor(claim.stale_after_ms / 4)))` ms
-
-## Status And Mirror Semantics
-
-### Status
-
-`docko status` returns a status payload, not the raw registry file.
-
-It includes:
-
-- `schema_version`
-- `workspace`
-- `applications`
-- filtered `resources`
-- `ignored_slot_dirs`
-- `janitor.released_claims`
-- `janitor.ended_sessions`, `janitor.ended_sessions_truncated`, `janitor.deleted_manifests`
+`docko status` returns a status payload, not the raw registry file. The payload carries
+`schema_version`, `workspace`, `applications`, the filtered `resources`, `ignored_slot_dirs`, and a
+`janitor` block with `released_claims`, `ended_sessions`, `ended_sessions_truncated`, and
+`deleted_manifests`.
 
 Reads do not rewrite state. `status`, `session list`, and `logs` leave `registry.json` and
-`registry.md` byte-identical unless the janitor actually changed something in that pass.
+`registry.md` byte-identical unless the janitor changed something in that pass.
 
-### Mirror
-
-`docko/registry.md` is regenerated whenever `registry.json` changes, and on demand by `docko render`.
-
-It is a human summary only. It exists to answer operational questions quickly, not to define the
-contract, so rendering it is best effort: a failed mirror write is logged and never fails the command.
+`docko/registry.md` is regenerated whenever `registry.json` changes, and on demand by
+`docko render`. It is a human summary, so rendering is best effort: a failed mirror write is logged
+and never fails the command.
 
 ## Logs
 
-Debug logs are best-effort and never block normal protocol operations.
+Debug logs are best effort and never block a protocol operation. Entries are newline-delimited JSON,
+files rotate by UTC day, and retention keeps the three most recent UTC days.
 
-Rules:
+`docko logs` reads recent entries newest first and clamps its window to the retained days.
+Retention is enforced once per process rather than on every append.
 
-- entries are newline-delimited JSON
-- files rotate by UTC day
-- retention keeps the most recent 3 UTC days
-- `docko logs` reads recent entries newest-first and clamps the query window to retained days
-- retention is enforced once per process, not on every append
-
-## Concurrency And Writes
+## Concurrency and atomic writes
 
 Registry-backed operations serialize on `docko/.registry.lock/`, a lock directory created with an
 atomic `mkdir`.
 
-Rules:
+- The holder writes `owner.json` inside the lock directory and reads it back. Only the process whose
+  stamp survived holds the lock, so a directory removed between the `mkdir` and the stamp does not
+  hand two processes the same lock.
+- A waiter polls with jittered backoff, 10 ms up to 100 ms, for up to 10 seconds before failing with
+  `REGISTRY_LOCK_TIMEOUT`.
+- The holder re-stamps `owner.json` every 10 seconds and moves the lock directory's mtime with it,
+  so a living holder stays fresh however long its operation runs.
+- A lock older than 30 seconds counts as abandoned and may be broken. Staleness is judged by age
+  alone, from the older of `acquired_at` and the directory mtime; a timestamp more than a second in
+  the future counts as the oldest possible time. The recorded `pid` is diagnostic and is never
+  probed for liveness.
+- Breaking a lock renames it to `docko/.registry.lock.stale-<random>` and deletes that, so only the
+  process that won the rename breaks it.
+- The holder re-checks its stamp immediately before persisting. A lock broken underneath it fails
+  the operation with `REGISTRY_LOCK_LOST` and writes nothing. Retrying the command is the fix.
+- The holder releases the lock only while it still owns it.
+- A locked operation on a root with no `docko/` directory fails with `WORKSPACE_NOT_INITIALIZED`
+  rather than a raw filesystem error.
 
-- the holder writes `owner.json` (`pid`, `hostname`, `acquired_at`) inside the lock directory, then reads it back: only the process whose stamp survived holds the lock, so a directory removed between the `mkdir` and the stamp does not hand two processes the same lock
-- a waiter polls with jittered backoff (10 ms up to 100 ms) for up to 10 seconds
-- the holder re-stamps `owner.json` every 10 seconds on an unref'd timer and moves the lock directory's mtime with it, so a living holder stays fresh however long its operation runs
-- a lock older than 30 seconds is treated as abandoned and may be broken. Staleness is judged purely by age, from the older of `owner.json`'s `acquired_at` and the lock directory's mtime; a timestamp more than a second in the future (clock skew, a restored backup) counts as the oldest possible time rather than postponing recovery forever, while a sub-second difference is filesystem timestamp precision and reads as "now". The recorded pid is diagnostic only and is never probed for liveness
-- breaking a lock renames it to a unique `docko/.registry.lock.stale-<random>` and deletes that, so only the process that won the rename breaks it and no one deletes a lock a third process has already re-created
-- the holder re-checks its stamp immediately before persisting the registry. If the lock was broken under it, the operation fails with `REGISTRY_LOCK_LOST` (exit 2) and writes nothing; retrying the command is the fix
-- the holder releases the lock only while it still owns it, so a lock broken and re-acquired by another process is never deleted from underneath it
-- a locked operation on a root with no `docko/` directory fails with `WORKSPACE_NOT_INITIALIZED`, not a raw filesystem error
+Every registry and manifest write is atomic: content goes to a sibling temp file and is renamed over
+the target. A rename that fails with `EPERM`, `EBUSY`, `EACCES`, or `ENOTEMPTY`, typical of Windows
+file scanners and concurrent readers, is retried with backoff, and exhausting the budget raises
+`ATOMIC_WRITE_FAILED`. Temp artifacts left behind by interrupted processes are swept once per
+process across `docko/`, `docko/sessions/`, and `docko/sessions/ended/`.
 
-Every registry and manifest write is atomic: content is written to a sibling temp file and renamed
-over the target. A rename that fails for a transient reason (`EPERM`, `EBUSY`, `EACCES`,
-`ENOTEMPTY` — typical of Windows file scanners and concurrent readers) is retried with backoff, and
-exhausting the budget raises `ATOMIC_WRITE_FAILED`. Temp artifacts left behind by killed processes
-are swept once per process, on both the registry read and write paths, across `docko/`,
-`docko/sessions/`, and `docko/sessions/ended/`.
+## Runtime-neutral command surface
 
-## Runtime-Neutral CLI Contract
-
-The stable runtime-neutral command surface is:
+Every runtime reaches the protocol through the same commands. This is the stable surface; see the
+[CLI reference](cli-reference.md) for defaults, payloads, and per-command notes.
 
 ```text
-docko init --root <path> [--slot-stale-after-ms <n>]
-docko app ensure --root <path> --id <app-id> [--name <text>] [--description <text>] [--keyword <term>]... [--source <path>] [--slots <n>] [--slot-base <id>] [--slot <id>]...
-docko slot acquire --root <path> [--session <id>] [--application <app-id>] [--branch <name>] [--task <text>] [--runtime <name>] [--stale-after-ms <n>] [--clone-when-busy] [--clone-from <path-or-slot>] [--clone-slot <id>] [--brief]
-docko slot duplicate --root <path> [--application <app-id>] --from <path-or-slot> --to <slot-id>
-docko status [--root <path>] [--resource <type>] [--id <id>] [--application <app-id>] [--brief]
-docko logs [--root <path>] [--days <n>] [--limit <n>]
+docko init --root <path> [--mode auto|workspace|repo] [--slot <id>]... [--slot-stale-after-ms <n>] [--session-stale-after-ms <n>]
+docko app ensure --root <path> --id <application-id> [--name <text>] [--description <text>] [--keyword <term>]... [--source <path>] [--slots <n>] [--slot-base <id>] [--slot <id>]...
+docko slot acquire --root <path> [--session <id>] [--application <id>] [--prefer <slot-id>] [--branch <name>] [--task <text>] [--runtime <name>] [--stale-after-ms <n>] [--clone-when-busy] [--clone-from <path-or-slot>] [--clone-slot <id>] [--brief]
+docko slot duplicate --root <path> --from <path-or-slot> --to <slot-id> [--application <id>]
+docko status --root <path> [--resource <type>] [--id <id>] [--application <id>] [--claimed] [--brief]
+docko logs --root <path> [--days <n>] [--limit <n>]
 docko claim --root <path> [--session <id>] --resource <type> --id <id> [--branch <name>] [--task <text>] [--runtime <name>] [--stale-after-ms <n>]
 docko heartbeat --root <path> [--session <id>] --resource <type> --id <id>
-docko release --root <path> [--session <id>] --resource <type> --id <id> [--reason <text>] [--force]
+docko release --root <path> [--session <id>] --resource <type> --id <id> [--reason <text>] [--force] [--brief]
 docko delegate --root <path> [--session <id>] --child-session <id> --resource <type> --id <id> [--scope read|write]
-docko resource ensure --root <path> --resource <type> --id <id> [--path <path>]
 docko render --root <path>
-docko session start --root <path> --runtime <name> [--session <id>] [--parent-session <id>] [--delegated-from-session <id>] [--actor-mode interactive|delegated|automation]
+docko resource ensure --root <path> --resource <type> --id <id> [--path <path>] [--auto-acquire | --no-auto-acquire]
+docko session start --root <path> [--session <id>] [--runtime <name>] [--actor-mode interactive|delegated|automation] [--parent-session <id>] [--delegated-from-session <id>]
 docko session end --root <path> [--session <id>]
 docko session current --root <path> [--session <id>] [--id-only]
-docko session list --root <path> [--brief]
-docko session prune --root <path> [--max-age-ms <n>] [--dry-run] [--brief]
+docko session list --root <path> [--limit <n>] [--brief]
+docko session prune --root <path> [--max-age-ms <n>] [--retention-ms <n>] [--dry-run] [--brief]
 ```
 
-Runtime-specific adapter commands exist under adapter namespaces and may automate these flows, but they must preserve the same claim, ownership, and stale-recovery semantics.
+`--brief` is an output projection supported by `status`, `slot acquire`, `release`, `session list`,
+and `session prune`. It changes no registry, session, claim, delegation, or stale-recovery
+semantics.
 
-## Error Contract
+Runtime adapters add commands under their own namespace and may automate these flows. They must
+preserve the same claim, ownership, and stale-recovery semantics.
 
-Fatal errors are emitted as structured JSON on stderr.
-Successful command payloads are emitted as JSON on stdout unless a command intentionally returns plain text.
-Some CLI commands also support `--brief`, which is an output projection only. It does not change registry, session, claim, delegation, or stale-recovery semantics.
+## Related
 
-Current exit codes:
-
-- `0`: success
-- `1`: usage error, invalid input, or missing resource
-- `2`: ownership or active-ID conflict
-- `3`: ambiguous session resolution
-- `4`: missing, ended, or otherwise unavailable session
-- `5`: corrupted registry
-
-Representative error codes include:
-
-- `USAGE_ERROR`
-- `INVALID_ID`
-- `NO_ACTIVE_SESSION`
-- `AMBIGUOUS_SESSION`
-- `SESSION_NOT_FOUND`
-- `SESSION_ID_CONFLICT`
-- `RESOURCE_NOT_FOUND`
-- `RESOURCE_NOT_CLAIMED`
-- `RESOURCE_ALREADY_CLAIMED`
-- `RESOURCE_OWNED_BY_OTHER_SESSION`
-- `RESOURCE_MUTATION_DENIED`
-- `ROOT_INSIDE_SLOT`
-- `ROOT_NOT_WORKSPACE`
-- `CORRUPTED_REGISTRY`
-- `WORKSPACE_NOT_INITIALIZED`
-- `REGISTRY_LOCK_TIMEOUT`
-- `REGISTRY_LOCK_LOST`
-- `ATOMIC_WRITE_FAILED`
-
-## Architectural Boundaries
-
-- `packages/core` defines protocol semantics and the on-disk contract
-- `schemas/` define the canonical registry and session shapes
-- `packages/cli` parses flags, resolves sessions, and shapes command output
-- `packages/adapters/*` automate runtime-specific integration without changing core claim semantics
-
-That split is part of the contract: adapters may enrich metadata and automate delegation flows, but ownership, release, stale cleanup, and registry/session persistence remain core responsibilities.
+- [State files](state-files.md): the on-disk shapes and every field.
+- [CLI reference](cli-reference.md): every command, option, and payload note.
+- [Errors](errors.md): error codes, exit codes, and authorization reasons.
+- [Architecture](architecture.md): how the implementation is split across modules.
+- [Adapter specification](adapter-spec.md): the contract a runtime adapter must satisfy.
+- [Concepts](concepts.md): the vocabulary this page uses normatively.

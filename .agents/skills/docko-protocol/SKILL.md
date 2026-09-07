@@ -9,6 +9,8 @@ description: Protocol, schema, and CLI contract guidance for the docko repositor
 
 - `docs/protocol.md`
 - `docs/architecture.md`
+- `docs/state-files.md`
+- `docs/errors.md`
 - `docs/cli-reference.md`
 - `docs/tests.md`
 - `schemas/registry.schema.json`

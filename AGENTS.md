@@ -12,8 +12,8 @@
 2. Read `docs/INDEX.md` for the documentation map.
 3. Read the task-specific sources before editing:
    - Protocol, schemas, and CLI contract: `docs/protocol.md`, `docs/architecture.md`, `docs/cli-reference.md`, `docs/tests.md`
-   - Runtime adapters: `docs/adapter-spec.md`, `docs/claude-code.md`
-   - Documentation and examples: `docs/docs-sync.md`, `docs/public-copy.md`, `docs/public-positioning.md`
+   - Runtime adapters: `docs/adapter-spec.md`, `docs/claude-code.md`, `docs/agents-md-runtimes.md`
+   - Documentation and examples: `docs/development.md`, `README.md`, `docs/why-not-just-worktrees.md`
 
 ## Repo Map
 
@@ -51,7 +51,7 @@ packages/adapters/claude-code/  Claude Code runtime adapter (only implemented ad
 .claude-plugin/marketplace.json  Makes this repo a Claude Code plugin marketplace
 schemas/                        Canonical JSON Schema for registry.json and session.json
 tests/                          Unit, service, e2e, CLI, and adapter tests (Node test runner)
-docs/                           Public documentation (21 files)
+docs/                           Public documentation (20 files, see docs/INDEX.md)
 bin/docko.js                    CLI entry point
 scripts/                        Build, test, and publish orchestration
 .agents/skills/                 Repo-local skills for Codex and agent runtimes
@@ -73,7 +73,7 @@ examples/                       Copy-pastable examples for adopters
 - When registry or session shapes change, update schemas, docs, and tests together.
 - When CLI commands or behavior change, update `docs/cli-reference.md` and any affected README, examples, or adapter docs.
 - When editing docs or templates, keep implemented behavior separate from roadmap material.
-- Do not present Codex or non-Claude runtime support as first-class implementation unless matching packages, templates, and tests exist.
+- Do not describe Codex or non-Claude runtime support as an implemented runtime adapter unless matching packages, templates, and tests exist.
 - Keep command examples shell-neutral and copy-pastable across PowerShell, cmd.exe, and POSIX shells.
 - Do not document flags, outputs, or recovery flows that are not implemented.
 
@@ -151,7 +151,7 @@ Key error codes: `USAGE_ERROR`, `INVALID_ID`, `NO_ACTIVE_SESSION`, `AMBIGUOUS_SE
 - If browsing is required, restrict sources to `developers.openai.com` or `platform.openai.com`.
 - Codex officially supports `AGENTS.md`, skills, and explicit subagent workflows.
 - Codex hooks are documented by OpenAI, including Windows-specific command and managed-directory fields.
-- This repo does not ship a Docko Codex adapter package, templates, or tests. Treat Codex support here as instruction-driven `docko` CLI usage, not a first-class adapter.
+- This repo does not ship a docko Codex adapter package, templates, or tests. Treat Codex support here as a guidance-based runtime: instruction-driven `docko` CLI usage, not an implemented adapter.
 
 <!-- docko:begin:codex -->
 ## docko Working Default

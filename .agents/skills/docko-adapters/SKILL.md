@@ -9,6 +9,7 @@ description: Runtime adapter guidance for the docko repository. Use when working
 
 - `docs/adapter-spec.md`
 - `docs/claude-code.md`
+- `docs/agents-md-runtimes.md`
 - `packages/adapters/claude-code/src/index.ts`
 - `packages/adapters/claude-code/plugin/` (canonical hook launcher, commands, skill, hooks manifest)
 - `packages/adapters/claude-code/templates/project/.claude/snippets/`
@@ -19,9 +20,9 @@ description: Runtime adapter guidance for the docko repository. Use when working
 
 - Treat the Claude adapter as the reference implementation for installer structure, template layout, and runtime-to-protocol mapping.
 - Be explicit about what is implemented versus what is only documented or planned.
-- Claude Code is the only first-class Docko adapter today.
+- Claude Code is the only implemented runtime adapter today.
 - Codex guidance is currently manual and docs-driven. Do not imply a shipped Codex adapter unless this repo gains a package, templates, and tests for it.
-- OpenAI documents Codex hooks, including Windows-specific command and managed-directory fields. Do not present hooks as Docko's default Codex path until this repo ships and tests a dedicated Codex adapter.
+- OpenAI documents Codex hooks, including Windows-specific command and managed-directory fields. Do not present hooks as docko's default Codex path until this repo ships and tests a dedicated Codex adapter.
 
 ## Change rules
 
