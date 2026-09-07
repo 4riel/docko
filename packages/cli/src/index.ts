@@ -8,8 +8,10 @@ import path from 'node:path';
 import {
   DockoError,
   DockoService,
+  SLOTS_DIR,
   assertSafeId,
   buildSessionStartMetadata,
+  isPathInside,
   toErrorPayload,
   type AuthorizationResult,
   type ClaimOptions,
@@ -640,9 +642,30 @@ function findWorkspaceRoot(startDir: string): string | null {
 
 // True when `candidate` is the workspace's slots/ directory or any path beneath it.
 function isPathInsideSlots(workspaceRootPath: string, candidate: string): boolean {
-  const slotsDir = path.resolve(workspaceRootPath, 'slots');
-  const relative = path.relative(slotsDir, path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return isPathInside(path.resolve(workspaceRootPath, SLOTS_DIR), candidate);
+}
+
+// `--dest` names where the adapter writes its plugin bundle. Resolving it outside the workspace
+// scatters hooks and a launcher into an unrelated project, so refuse rather than guess.
+function resolveAdapterDestination(context: CliContext): string {
+  const destination = option(context.options, 'dest');
+  if (!destination) {
+    return DEFAULT_CLAUDE_PLUGIN_DESTINATION;
+  }
+
+  const resolved = path.resolve(context.root, destination);
+  if (!isPathInside(context.root, resolved)) {
+    throw new DockoError(
+      `--dest must stay inside the workspace root ${context.root}; ${resolved} is outside it.`,
+      'USAGE_ERROR',
+      1,
+      { option: 'dest', value: destination, resolved_destination: resolved, workspace_root: context.root }
+    );
+  }
+
+  // The adapter renders `$CLAUDE_PROJECT_DIR/<dest>` into committed settings, so the destination
+  // it receives has to be workspace-relative even when the caller passed an absolute path.
+  return path.relative(context.root, resolved) || '.';
 }
 
 // Commands that scaffold assets act on the directory they were pointed at, never on an ancestor:
@@ -1950,6 +1973,7 @@ function compactStatus(status: StatusResult | StatusPayload): Record<string, unk
     slots: countSlots(resources),
     applications: applicationSummaries,
     summary: payload.summary ?? null,
+    ignored_slot_dirs: status.ignored_slot_dirs ?? [],
     resources: resources.map(compactResource),
     janitor_released: status.janitor.released_claims.length,
     released_claims: status.janitor.released_claims.map(compactResource),
@@ -2637,7 +2661,7 @@ async function initializeWorkspace(context: CliContext): Promise<Record<string, 
   const claudeInstall = effectivePromptConfig.claude.enabled
     ? await installClaudeCodeAdapter({
         workspaceRoot: context.root,
-        destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+        destination: resolveAdapterDestination(context),
         force: Boolean(context.options.force),
         writeSettingsLocal: true
       })
@@ -2960,7 +2984,8 @@ function buildEnsureResourceOptions(context: CliContext): EnsureResourceOptions 
   return {
     resourceType: requiredOption(context.options, 'resource'),
     resourceId: requiredOption(context.options, 'id'),
-    path: option(context.options, 'path')
+    // Absent means "leave the path alone". `null` would read as "clear it".
+    path: option(context.options, 'path') ?? undefined
   };
 }
 
@@ -3006,6 +3031,8 @@ function serializeAuthorization(
     previous_owner_session_id: authorization.previous_owner_session_id ?? null,
     application_id: authorization.application_id ?? null,
     slot_path: slotPath,
+    invalid_slot_dir: authorization.invalid_slot_dir ?? null,
+    session_known: authorization.session_known ?? null,
     workspace_root: workspaceRootPath
   };
 }
@@ -3320,7 +3347,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       async () =>
         installClaudeCodeAdapter({
           workspaceRoot: context.root,
-          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+          destination: resolveAdapterDestination(context),
           force: Boolean(context.options.force),
           writeSettingsLocal: Boolean(context.options['write-settings-local'])
         })
@@ -3329,7 +3356,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'adapter claude-code settings',
       async () =>
         buildClaudeCodeSettingsFragment({
-          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+          destination: resolveAdapterDestination(context),
           workspaceRoot: context.root
         })
     ],
@@ -3338,7 +3365,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       async () =>
         doctorClaudeCodeAdapter({
           workspaceRoot: context.root,
-          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+          destination: resolveAdapterDestination(context),
           fix: Boolean(context.options.fix)
         })
     ],
@@ -3389,7 +3416,13 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'adapter claude-code pre-tool-use',
       async () => {
         const payload = await readJsonStdin();
-        const sessionId = await resolveSessionId(context);
+        // The runtime's own session id is authoritative for this hook. Ignoring it and falling
+        // back to single-active resolution answered for the wrong session in a multi-session
+        // workspace; an id docko has never seen is answered as a session that owns nothing.
+        const sessionId =
+          option(context.options, 'session') ??
+          (typeof payload.session_id === 'string' ? payload.session_id : null) ??
+          (await resolveSessionId(context));
         const filePath = extractHookFilePath(payload);
         if (!filePath) {
           return { allow: true, reason: 'no-file-path' };
