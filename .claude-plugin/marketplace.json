@@ -3,6 +3,7 @@
   "owner": {
     "name": "4riel"
   },
+  "description": "docko: workspace slot coordination for AI coding agents, driven by Claude Code hooks.",
   "plugins": [
     {
       "name": "docko",

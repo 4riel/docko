@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// docko-launcher-version: 0.1.0-alpha.15
+// docko-launcher-version: 0.1.0-alpha.16
 // docko Claude Code hook launcher.
 //
 // Responsibilities:

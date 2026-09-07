@@ -6,6 +6,8 @@ All notable changes to `docko-workspace` are documented here. The format is base
 
 ## [Unreleased]
 
+## [0.1.0-alpha.16]
+
 ### Added
 
 - The stale janitor now ends sessions that stop reporting activity, using the new
@@ -204,7 +206,8 @@ All notable changes to `docko-workspace` are documented here. The format is base
 - The Claude adapter now stamps `plugin.json` with the live package version on every install
   instead of copying a hardcoded literal, and its hook launcher only opts into a shell on Windows.
 
-[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.15...HEAD
+[Unreleased]: https://github.com/4riel/docko/compare/v0.1.0-alpha.16...HEAD
+[0.1.0-alpha.16]: https://github.com/4riel/docko/compare/v0.1.0-alpha.15...v0.1.0-alpha.16
 [0.1.0-alpha.15]: https://github.com/4riel/docko/compare/v0.1.0-alpha.14...v0.1.0-alpha.15
 [0.1.0-alpha.14]: https://github.com/4riel/docko/compare/v0.1.0-alpha.13...v0.1.0-alpha.14
 [0.1.0-alpha.13]: https://github.com/4riel/docko/releases/tag/v0.1.0-alpha.13
