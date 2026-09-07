@@ -68,6 +68,8 @@ export interface ClaudeCodeDoctorIssue {
   fixable: boolean;
   settings_file?: string;
   event?: string;
+  // The tool matcher the entry is registered against; null when the registration has none.
+  matcher?: string | null;
   command?: string;
 }
 
@@ -746,8 +748,10 @@ async function inspectSettingsHooks(args: {
     }
 
     const kept: unknown[] = [];
-    let eventDockoEntries = 0;
-    let keptDockoEntries = 0;
+    // Two registrations for the same event with different matchers are two different hooks, not a
+    // duplicate: `Edit|Write` and `NotebookEdit` both have to survive --fix.
+    const seenByMatcher = new Map<string, number>();
+    const keptByMatcher = new Map<string, number>();
 
     for (const entry of rawEntries) {
       const command = readEntryCommand(entry);
@@ -756,8 +760,9 @@ async function inspectSettingsHooks(args: {
         continue;
       }
 
+      const matcher = readEntryMatcher(entry);
       dockoEntries += 1;
-      eventDockoEntries += 1;
+      seenByMatcher.set(matcher, (seenByMatcher.get(matcher) ?? 0) + 1);
       const state = await inspectLauncherCommand(command, args.workspaceRoot, args.shippedVersion);
       if (state !== 'healthy' && state !== 'plugin-managed') {
         staleEntries += 1;
@@ -770,6 +775,7 @@ async function inspectSettingsHooks(args: {
           fixable: true,
           settings_file: args.settingsPath,
           event: eventName,
+          matcher: matcher || null,
           command
         });
 
@@ -782,25 +788,28 @@ async function inspectSettingsHooks(args: {
         continue;
       }
 
-      // Claude Code runs the hook once per registration, so a second healthy entry doubles every
-      // hook for that event. --fix keeps the first and drops the rest.
-      if (args.fix && keptDockoEntries > 0) {
+      // Claude Code runs the hook once per registration, so a second healthy entry with the same
+      // matcher doubles that hook. --fix keeps the first of each matcher and drops the rest.
+      if (args.fix && (keptByMatcher.get(matcher) ?? 0) > 0) {
         removedEntries += 1;
         continue;
       }
 
-      keptDockoEntries += 1;
+      keptByMatcher.set(matcher, (keptByMatcher.get(matcher) ?? 0) + 1);
       kept.push(entry);
     }
 
-    if (eventDockoEntries > 1) {
-      issues.push({
-        code: 'DUPLICATE_HOOK_REGISTRATION',
-        message: `${args.settingsPath} registers docko ${eventName} ${eventDockoEntries} times; Claude Code will run the hook once per entry.`,
-        fixable: true,
-        settings_file: args.settingsPath,
-        event: eventName
-      });
+    for (const [matcher, count] of seenByMatcher) {
+      if (count > 1) {
+        issues.push({
+          code: 'DUPLICATE_HOOK_REGISTRATION',
+          message: `${args.settingsPath} registers docko ${eventName} (${describeMatcher(matcher)}) ${count} times; Claude Code will run the hook once per entry.`,
+          fixable: true,
+          settings_file: args.settingsPath,
+          event: eventName,
+          matcher: matcher || null
+        });
+      }
     }
 
     if (args.fix && kept.length !== rawEntries.length) {
@@ -809,6 +818,20 @@ async function inspectSettingsHooks(args: {
   }
 
   return { issues, dockoEntries, staleEntries, removedEntries };
+}
+
+// Normalized so `"Edit|Write"`, `" Edit|Write "`, and a missing matcher compare consistently.
+// The empty string stands for "no matcher", which is a matcher value of its own.
+function readEntryMatcher(entry: unknown): string {
+  if (isRecord(entry) && typeof entry.matcher === 'string') {
+    return entry.matcher.trim();
+  }
+
+  return '';
+}
+
+function describeMatcher(matcher: string): string {
+  return matcher ? `matcher ${matcher}` : 'no matcher';
 }
 
 function readEntryCommand(entry: unknown): string | null {

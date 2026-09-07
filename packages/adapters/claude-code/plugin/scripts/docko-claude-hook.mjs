@@ -55,8 +55,8 @@ if ((subcommand === 'pre-tool-use' || subcommand === 'subagent-start') && claude
 
 let result = await runDocko(subcommand, extraArgs, rawPayload, dockoRoot);
 if (result.code !== 0 && extraArgs.length > 0 && subcommand === 'pre-tool-use') {
-  // The Claude session id may not map to a docko session (e.g. manually started
-  // sessions). Retry with the CLI's own resolution before failing open.
+  // An unknown session id is answered, not rejected, by the CLI, so a non-zero exit here is a
+  // real failure. Retry with the CLI's own resolution once before failing open.
   result = await runDocko(subcommand, [], rawPayload, dockoRoot);
 }
 
@@ -171,13 +171,31 @@ function quoteArgument(value) {
 // Every deny names the slot, the reason, and one command that fixes it. The blocked agent has
 // no other way to learn which session owns the slot or what to run next.
 function buildDenyReason(cliOutput) {
-  const slotId = typeof cliOutput.resource_id === 'string' ? cliOutput.resource_id : 'this slot';
+  const rawSlotId = typeof cliOutput.resource_id === 'string' ? cliOutput.resource_id : null;
+  const slotId = rawSlotId ?? 'this slot';
+  const slotArg = quoteArgument(slotId);
   const sessionId = typeof cliOutput.session_id === 'string' ? cliOutput.session_id : null;
   const ownerSessionId = typeof cliOutput.owner_session_id === 'string' ? cliOutput.owner_session_id : null;
   const root = typeof cliOutput.workspace_root === 'string' ? cliOutput.workspace_root : dockoRoot;
   const rootArg = `--root ${quoteArgument(root)}`;
-  const sessionArg = sessionId ? ` --session ${sessionId}` : '';
+  const sessionArg = sessionId ? ` --session ${quoteArgument(sessionId)}` : '';
   const reason = typeof cliOutput.reason === 'string' ? cliOutput.reason : 'not-authorized';
+  // A session docko never registered owns nothing, so every reason below is really "your
+  // SessionStart hook did not run". Say so once, at the end, instead of per branch.
+  const unknownSession =
+    cliOutput.session_known === false && sessionId
+      ? ` Note: session ${sessionId} is not registered with docko; the SessionStart hook did not run — start it with: docko session start ${rootArg} --session ${quoteArgument(sessionId)} --runtime claude-code`
+      : '';
+
+  // A slot directory whose name is not a valid docko id can never be claimed, so telling the
+  // agent to claim it would loop forever. The only way out is renaming the directory.
+  if (typeof cliOutput.invalid_slot_dir === 'string') {
+    return (
+      `docko blocked this write: ${cliOutput.invalid_slot_dir} is inside the managed slots tree but its directory name is not a valid docko id ` +
+      `(letters, digits, underscore, dash, dot; no spaces and no ".."), so it can never be claimed. ` +
+      `Rename the directory to a valid id, then run: docko status ${rootArg} --brief${unknownSession}`
+    );
+  }
 
   if (reason === 'claim-expired') {
     const expiredAt = typeof cliOutput.expired_at === 'string' ? ` at ${cliOutput.expired_at}` : '';
@@ -189,20 +207,20 @@ function buildDenyReason(cliOutput) {
     const task = typeof cliOutput.owner_task === 'string' ? cliOutput.owner_task : '<task>';
     return (
       `docko blocked this write: your claim on ${slotId} expired${expiredAt}${quiet}. ` +
-      `Re-claim it: docko claim ${rootArg}${sessionArg} --resource slot --id ${slotId} --branch ${branch} --task "${task}"`
+      `Re-claim it: docko claim ${rootArg}${sessionArg} --resource slot --id ${slotArg} --branch ${quoteArgument(branch)} --task "${task}"${unknownSession}`
     );
   }
 
   if (reason === 'slot-not-claimed') {
     const application =
-      typeof cliOutput.application_id === 'string' ? ` --application ${cliOutput.application_id}` : '';
+      typeof cliOutput.application_id === 'string' ? ` --application ${quoteArgument(cliOutput.application_id)}` : '';
     const previousOwner =
       typeof cliOutput.previous_owner_session_id === 'string'
         ? ` It was last held by session ${cliOutput.previous_owner_session_id}.`
         : '';
     return (
       `docko blocked this write: ${slotId} is not claimed.${previousOwner} ` +
-      `Claim it first: docko slot acquire ${rootArg}${sessionArg}${application} --prefer ${slotId} --branch <branch> --task "<task>" --brief`
+      `Claim it first: docko slot acquire ${rootArg}${sessionArg}${application} --prefer ${slotArg} --branch <branch> --task "<task>" --brief${unknownSession}`
     );
   }
 
@@ -218,14 +236,14 @@ function buildDenyReason(cliOutput) {
           : 'liveness unknown';
     return (
       `docko blocked this write: the slot ${slotId} is claimed by ${owner} (${task}${branch}${liveness}). ` +
-      `Ask that session to release or delegate it, or run: docko release ${rootArg}${sessionArg} --resource slot --id ${slotId} --force`
+      `Ask that session to release or delegate it, or run: docko release ${rootArg}${sessionArg} --resource slot --id ${slotArg} --force${unknownSession}`
     );
   }
 
   const owner = ownerSessionId ? ` (owner: ${ownerSessionId})` : '';
   return (
     `docko blocked this write: ${reason}${owner} on ${slotId}. ` +
-    `Check ownership with: docko status ${rootArg} --brief --claimed`
+    `Check ownership with: docko status ${rootArg} --brief --claimed${unknownSession}`
   );
 }
 
