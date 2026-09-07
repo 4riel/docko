@@ -3203,7 +3203,8 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'adapter claude-code settings',
       async () =>
         buildClaudeCodeSettingsFragment({
-          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION
+          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+          workspaceRoot: context.root
         })
     ],
     [

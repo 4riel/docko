@@ -29,24 +29,55 @@ async function runShellJson(command, options) {
   return parseStdout(result);
 }
 
-test('Claude adapter exposes the expected hook settings fragment', async () => {
+test('Claude adapter anchors the hook command and matches the plugin bundle timeouts', async () => {
   const { buildClaudeCodeSettingsFragment } = await loadAdapterModule();
-  const fragment = buildClaudeCodeSettingsFragment();
+
+  // Without a known workspace root the command anchors on Claude Code's project variable.
+  const portable = buildClaudeCodeSettingsFragment();
   assert.equal(
-    fragment.hooks.PreToolUse[0].hooks[0].command,
-    'node ".claude-plugin/docko/scripts/docko-claude-hook.mjs" pre-tool-use'
+    portable.hooks.PreToolUse[0].hooks[0].command,
+    'node "$CLAUDE_PROJECT_DIR/.claude-plugin/docko/scripts/docko-claude-hook.mjs" pre-tool-use'
   );
-  assert.equal(fragment.hooks.SubagentStart[0].hooks[0].timeout, 10);
+
+  // An install knows the root, so the command is absolute and resolves from any cwd or shell.
+  const anchored = buildClaudeCodeSettingsFragment({ workspaceRoot: path.join(repoRoot, 'fixture') });
+  assert.equal(
+    anchored.hooks.SessionStart[0].hooks[0].command,
+    `node "${path.join(repoRoot, 'fixture', '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs')}" session-start`
+  );
+
+  assert.equal(anchored.hooks.SessionStart[0].hooks[0].timeout, 60);
+  assert.equal(anchored.hooks.SessionEnd[0].hooks[0].timeout, 15);
+  assert.equal(anchored.hooks.PreToolUse[0].hooks[0].timeout, 30);
+  assert.equal(anchored.hooks.SubagentStart[0].hooks[0].timeout, 30);
 });
 
-test('Claude adapter emits shell-neutral hook commands on Windows', async () => {
+test('Claude adapter only emits a matcher for tool events', async () => {
   const { buildClaudeCodeSettingsFragment } = await loadAdapterModule();
   const fragment = buildClaudeCodeSettingsFragment('win32');
-  assert.equal(
-    fragment.hooks.SessionStart[0].hooks[0].command,
-    'node ".claude-plugin/docko/scripts/docko-claude-hook.mjs" session-start'
-  );
-  assert.doesNotMatch(fragment.hooks.SessionStart[0].hooks[0].command, /CLAUDE_PROJECT_DIR|%/);
+
+  assert.equal(fragment.hooks.PreToolUse[0].matcher, 'Edit|Write');
+  assert.equal('matcher' in fragment.hooks.SessionStart[0], false);
+  assert.equal('matcher' in fragment.hooks.SessionEnd[0], false);
+  assert.equal('matcher' in fragment.hooks.SubagentStart[0], false);
+});
+
+test('generated hook fragment matches the distributable plugin bundle', async () => {
+  const { buildClaudeCodeSettingsFragment } = await loadAdapterModule();
+  const fragment = buildClaudeCodeSettingsFragment();
+  const bundle = JSON.parse(
+    await readFile(path.join(repoRoot, 'packages', 'adapters', 'claude-code', 'plugin', 'hooks', 'hooks.json'), 'utf8')
+  ).hooks;
+
+  assert.deepEqual(Object.keys(fragment.hooks).sort(), Object.keys(bundle).sort());
+  for (const eventName of Object.keys(bundle)) {
+    const generated = fragment.hooks[eventName][0];
+    const shipped = bundle[eventName][0];
+    assert.equal(generated.matcher, shipped.matcher, eventName);
+    assert.equal(generated.hooks[0].timeout, shipped.hooks[0].timeout, eventName);
+    // Same launcher, same subcommand; only the path anchor differs between install paths.
+    assert.equal(generated.hooks[0].command.split('" ')[1], shipped.hooks[0].command.split('" ')[1], eventName);
+  }
 });
 
 test('Claude adapter reads both managed snippets from the installed package templates', async () => {

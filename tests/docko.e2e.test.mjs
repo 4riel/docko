@@ -538,28 +538,55 @@ test('running from inside a slot resolves up to the workspace root with no leake
   assert.equal(existsSync(path.join(slotDir, 'docko')), false);
 });
 
-test('an explicit --root pointing inside a managed slot is refused, not fragmented', async () => {
+test('an explicit --root inside a managed slot resolves up instead of failing', async () => {
   const root = await makeWorkspace('docko-root-in-slot-');
   await runCli(['init', '--root', root]);
   const slotDir = path.join(root, 'slots', 'app-alpha');
 
-  const result = await runCli(['status', '--root', '.'], { cwd: slotDir });
-  assert.equal(result.code, 1);
-  const payload = JSON.parse(result.stderr);
-  assert.equal(payload.error.code, 'ROOT_INSIDE_SLOT');
-  assert.equal(payload.error.workspace_root, root);
+  // `--root .` is what every shipped example tells an agent to type, and agents run commands
+  // from inside slots. It must mean the same as no --root at all.
+  const status = parseStdout(await runCli(['status', '--root', '.', '--brief'], { cwd: slotDir }));
+  assert.equal(status.resolved_root, root);
+  assert.equal(status.workspace.workspace_root, root);
   assert.equal(existsSync(path.join(slotDir, 'docko')), false);
+
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'in-slot']);
+  const acquired = parseStdout(
+    await runCli(
+      [
+        'slot',
+        'acquire',
+        '--root',
+        '.',
+        '--session',
+        'in-slot',
+        '--branch',
+        'feat/in-slot',
+        '--task',
+        'work from inside a slot',
+        '--brief'
+      ],
+      { cwd: slotDir, env: { DOCKO_SESSION_ID: 'in-slot' } }
+    )
+  );
+  assert.equal(acquired.resolved_root, root);
 });
 
-test('init never walks up so a nested workspace can still be scaffolded', async () => {
+test('init still refuses an explicit --root inside a managed slot', async () => {
   const root = await makeWorkspace('docko-init-nowalkup-');
   await runCli(['init', '--root', root]);
   const nested = path.join(root, 'slots', 'app-alpha', 'child');
   await mkdir(nested, { recursive: true });
 
-  const init = parseStdout(await runCli(['init', '--root', '.'], { cwd: nested }));
-  assert.equal(init.workspace_root_absolute, nested);
-  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), true);
+  const result = await runCli(['init', '--root', '.'], { cwd: nested });
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stderr);
+  assert.equal(payload.error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(payload.error.workspace_root, root);
+  // The message must carry absolute paths and a runnable command, not cwd-relative fragments.
+  assert.match(payload.error.message, /docko init --root "/);
+  assert.ok(payload.error.message.includes(root));
+  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), false);
 });
 
 test('CLI launcher delegates through the checked-in bin entrypoint', async () => {
@@ -861,6 +888,7 @@ test('brief output summarizes status, slot acquire, and session list', async () 
   assert.deepEqual(acquired, {
     ok: true,
     action: 'claimed-existing-slot',
+    resolved_root: root,
     session_id: 'worker',
     slot_id: 'app-alpha',
     application_id: null,

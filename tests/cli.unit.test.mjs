@@ -834,14 +834,51 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
     /Codex: configured/
   );
 
-  const auth = cli.serializeAuthorization({
-    allowed: true,
+  // The hook launcher builds its deny message from this payload, so every field it can render
+  // must be present — as null when the core build does not populate it yet.
+  const auth = cli.serializeAuthorization(
+    {
+      allowed: true,
+      reason: 'ok',
+      session_id: 's1',
+      resource_id: 'r1',
+      owner_session_id: 's1'
+    },
+    '/workspace'
+  );
+  assert.deepEqual(auth, {
+    allow: true,
     reason: 'ok',
     session_id: 's1',
     resource_id: 'r1',
-    owner_session_id: 's1'
+    owner_session_id: 's1',
+    owner_task: null,
+    owner_branch: null,
+    owner_session_active: null,
+    expired_at: null,
+    slot_path: null,
+    workspace_root: '/workspace'
   });
-  assert.deepEqual(auth, { allow: true, reason: 'ok', session_id: 's1', resource_id: 'r1', owner_session_id: 's1' });
+
+  const detailedAuth = cli.serializeAuthorization(
+    {
+      allowed: false,
+      reason: 'unrelated-session',
+      session_id: 's2',
+      resource_id: 'r1',
+      owner_session_id: 's1',
+      owner_task: 'ship it',
+      owner_branch: 'feat/x',
+      owner_session_active: true,
+      expired_at: null,
+      slot_path: '/workspace/slots/r1'
+    },
+    '/workspace'
+  );
+  assert.equal(detailedAuth.owner_task, 'ship it');
+  assert.equal(detailedAuth.owner_branch, 'feat/x');
+  assert.equal(detailedAuth.owner_session_active, true);
+  assert.equal(detailedAuth.slot_path, '/workspace/slots/r1');
 
   let stdout = '';
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);

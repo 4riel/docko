@@ -88,14 +88,26 @@ export async function makeWorkspace(prefix = 'docko-workspace-') {
   return root;
 }
 
+// docko now falls back to the runtime's session id, so a suite run from inside an agent session
+// would otherwise inherit that session. Tests declare the session they mean, or none at all.
+export const AMBIENT_SESSION_ENV_KEYS = ['DOCKO_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'DOCKO_ROOT'];
+
+function withoutAmbientSessionEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const key of AMBIENT_SESSION_ENV_KEYS) {
+    if (!(key in overrides)) {
+      delete env[key];
+    }
+  }
+
+  return { ...env, ...overrides };
+}
+
 export async function runProcess(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
-      env: {
-        ...process.env,
-        ...options.env
-      },
+      env: withoutAmbientSessionEnv(options.env),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -174,6 +186,12 @@ export async function runCliDirect(args, options = {}) {
     try {
       if (options.cwd) {
         process.chdir(options.cwd);
+      }
+
+      for (const key of AMBIENT_SESSION_ENV_KEYS) {
+        if (!options.env || !(key in options.env)) {
+          delete process.env[key];
+        }
       }
 
       if (options.env) {

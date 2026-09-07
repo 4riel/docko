@@ -72,7 +72,13 @@ test('plugin hooks manifest covers all adapter events with portable commands', a
 
 test('plugin bundle ships the commands, skill, and hook launcher', async () => {
   const commands = (await readdir(path.join(pluginRoot, 'commands'))).sort();
-  assert.deepEqual(commands, ['dock-claim.md', 'dock-heartbeat.md', 'dock-release.md', 'dock-status.md']);
+  assert.deepEqual(commands, [
+    'dock-claim.md',
+    'dock-doctor.md',
+    'dock-heartbeat.md',
+    'dock-release.md',
+    'dock-status.md'
+  ]);
 
   const skill = await readFile(path.join(pluginRoot, 'skills', 'workspace-orchestration', 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: workspace-orchestration\n/);

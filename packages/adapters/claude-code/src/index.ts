@@ -24,6 +24,8 @@ export interface ClaudeCodeSettingsFragmentOptions {
   platform?: TargetPlatform;
   /** Plugin destination relative to the project root (matches `--dest`). */
   destination?: string;
+  /** When known, the launcher path is emitted absolute so any cwd and shell resolves it. */
+  workspaceRoot?: string;
 }
 
 export interface ClaudeCodeInstallOptions {
@@ -131,14 +133,17 @@ export function buildClaudeCodeSettingsFragment(
   options: TargetPlatform | ClaudeCodeSettingsFragmentOptions = {}
 ): ClaudeCodeSettingsFragment {
   const normalized: ClaudeCodeSettingsFragmentOptions = typeof options === 'string' ? { platform: options } : options;
-  const destination = normalized.destination ?? DEFAULT_PLUGIN_DESTINATION;
+  const launcherPath = resolveLauncherCommandPath(
+    normalized.destination ?? DEFAULT_PLUGIN_DESTINATION,
+    normalized.workspaceRoot
+  );
 
   return {
     hooks: {
-      SessionStart: [toHookEntry('SessionStart', buildHookCommand('SessionStart', destination))],
-      SessionEnd: [toHookEntry('SessionEnd', buildHookCommand('SessionEnd', destination))],
-      PreToolUse: [toHookEntry('PreToolUse', buildHookCommand('PreToolUse', destination))],
-      SubagentStart: [toHookEntry('SubagentStart', buildHookCommand('SubagentStart', destination))]
+      SessionStart: [toHookEntry('SessionStart', buildHookCommand('SessionStart', launcherPath))],
+      SessionEnd: [toHookEntry('SessionEnd', buildHookCommand('SessionEnd', launcherPath))],
+      PreToolUse: [toHookEntry('PreToolUse', buildHookCommand('PreToolUse', launcherPath))],
+      SubagentStart: [toHookEntry('SubagentStart', buildHookCommand('SubagentStart', launcherPath))]
     }
   };
 }
@@ -159,7 +164,7 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
   const pluginBundleRoot = path.join(packageRoot, 'plugin');
   const force = Boolean(options.force);
   const version = await readPackageVersion(packageRoot);
-  const settingsFragment = buildClaudeCodeSettingsFragment({ destination: relativeDestination });
+  const settingsFragment = buildClaudeCodeSettingsFragment({ destination: relativeDestination, workspaceRoot });
 
   const pluginResult = await copyManagedTree({
     sourceRoot: path.join(pluginBundleRoot, 'scripts'),
@@ -459,15 +464,22 @@ function toPosixPath(targetPath: string): string {
   return targetPath.split(path.win32.sep).join('/');
 }
 
-function buildHookCommand(hookName: ClaudeHookName, destination: string): ClaudeHookCommand {
-  const subcommand = hookSubcommand(hookName);
-  // $CLAUDE_PROJECT_DIR is Claude Code's anchor for project-relative hook commands: a bare
-  // relative path only resolves when the hook happens to run from the project root.
-  const launcherPath = `$CLAUDE_PROJECT_DIR/${toPosixPath(path.join(destination, 'scripts', HOOK_SCRIPT_NAME))}`;
+// A cwd-relative launcher path only resolves when the hook happens to run from the project root,
+// and slot workflows are entirely about other directories. Anchor it: absolute when the install
+// knows the workspace root, otherwise Claude Code's $CLAUDE_PROJECT_DIR.
+function resolveLauncherCommandPath(destination: string, workspaceRoot?: string): string {
+  const relativeLauncher = path.join(destination, 'scripts', HOOK_SCRIPT_NAME);
+  if (workspaceRoot) {
+    return path.resolve(workspaceRoot, relativeLauncher);
+  }
 
+  return `$CLAUDE_PROJECT_DIR/${toPosixPath(relativeLauncher)}`;
+}
+
+function buildHookCommand(hookName: ClaudeHookName, launcherPath: string): ClaudeHookCommand {
   return {
     matcher: hookName === 'PreToolUse' ? 'Edit|Write' : undefined,
-    command: `node "${launcherPath}" ${subcommand}`
+    command: `node "${launcherPath}" ${hookSubcommand(hookName)}`
   };
 }
 
