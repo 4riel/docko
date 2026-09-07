@@ -234,8 +234,9 @@ against `workspace.config.janitor.session_stale_after_ms`, otherwise `28800000`.
 - Ending a stale session marks and relocates the manifest exactly as `docko session end` does.
 - One pass ends at most 100 sessions. When more remain, `janitor.ended_sessions_truncated` is `true`
   and the next pass continues.
-- One pass also deletes at most 200 ended manifests older than `604800000` ms, reported as
-  `janitor.deleted_manifests`.
+- The first registry pass in a process also deletes at most 200 ended manifests older than
+  `604800000` ms, reported as `janitor.deleted_manifests`. Later passes in the same process report
+  `0`.
 - `docko status` reports the ended manifests under `janitor.ended_sessions`, and the debug log
   records a `stale-session-recovery` entry.
 
@@ -244,16 +245,10 @@ against `workspace.config.janitor.session_stale_after_ms`, otherwise `28800000`.
 The write check is deliberately narrow: it answers for paths inside managed slot directories and
 takes no position on anything else. Non-slot resources are outside file-path authorization.
 
-| Reason | Outcome | Condition |
-| --- | --- | --- |
-| `path-not-managed` | allowed | The path is outside every managed slot. |
-| `owner` | allowed | The acting session owns the claim. |
-| `delegated` | allowed | The acting session holds a `write` delegation on the claim. |
-| `slot-not-claimed` | denied | The slot is free, or its directory name is not a valid resource id. |
-| `claim-expired` | denied | The janitor released this session's claim on the slot. |
-| `unrelated-session` | denied | Another session owns the claim. |
-
-The vocabulary is closed and the core exports it as `AUTHORIZATION_REASONS`.
+Every check answers with one reason from a closed vocabulary that the core exports as
+`AUTHORIZATION_REASONS`. Three reasons allow the write and three deny it, and the CLI adds
+`no-file-path` as a fourth allow when a hook payload carries no path.
+[Errors](errors.md#authorization-reasons) lists each reason and its outcome.
 
 The result carries enough context to explain itself without a second call: `session_id`,
 `resource_id`, `owner_session_id`, `owner_task`, `owner_branch`, `owner_session_active`,
@@ -262,7 +257,7 @@ The result carries enough context to explain itself without a second call: `sess
 
 An unregistered or ended session is answered, not rejected. It is evaluated as a session that owns
 nothing, so a write inside `slots/` is denied with its natural reason and `session_known: false`.
-Rejecting it instead let a fail-open adapter allow the write.
+Rejecting it would let a fail-open adapter allow the write.
 
 The cost of a check depends on where the path is.
 
@@ -327,8 +322,10 @@ process across `docko/`, `docko/sessions/`, and `docko/sessions/ended/`.
 
 ## Runtime-neutral command surface
 
-Every runtime reaches the protocol through the same commands. This is the stable surface; see the
-[CLI reference](cli-reference.md) for defaults, payloads, and per-command notes.
+Every runtime reaches the protocol through the same commands. The block below lists the
+protocol-level options only, so runtime and scaffolding flags are omitted. See the
+[CLI reference](cli-reference.md) for the exhaustive surface, with defaults, payloads, and
+per-command notes.
 
 ```text
 docko init --root <path> [--mode auto|workspace|repo] [--slot <id>]... [--slot-stale-after-ms <n>] [--session-stale-after-ms <n>]

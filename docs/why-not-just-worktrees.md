@@ -1,7 +1,7 @@
 # Persistent slots compared with git worktrees
 
-`docko` and git worktrees both let you work on more than one branch at once. They optimize for
-different things. This page helps you pick.
+`docko` and git worktrees both let you work on more than one branch at once, and they optimize for
+different things. Read this page to pick between them.
 
 ## What each one optimizes for
 
@@ -26,7 +26,7 @@ caches and local state carry over between sessions.
 
 - You mainly need fast, cheap parallel branch checkouts.
 - You do not need a shared workspace root or explicit session ownership.
-- Local setup is light and easy to recreate from a fresh checkout.
+- Local setup is light and cheap to recreate from a fresh checkout.
 - Long-lived per-slot state, such as warm caches or a running dev server, is not important.
 
 ## Choose docko when

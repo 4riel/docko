@@ -5,7 +5,7 @@ slot pool. Use it when one workspace root manages more than one codebase and slo
 
 ## Before you begin
 
-This guide assumes an initialized workspace. See [quickstart](quickstart.md) if you have not run
+This guide assumes an initialized workspace. See [Quickstart](quickstart.md) if you have not run
 `docko init` yet. Examples use `--root ./workspace` and omit `--session`; add your session id or
 run from inside a Claude Code session where docko resolves it for you.
 
@@ -35,9 +35,11 @@ docko app ensure --root ./workspace --id backend --name Backend --description "B
 
 ## Seed the slot pool
 
-Seed slots the same command creates the application with, or on a later call. Three ways to seed:
+Seed slots on the same call that registers the application, or on a later call. Three ways to
+seed:
 
-- `--slots <n> --slot-base <id>`: creates `<id>_1` through `<id>_n` as empty directories.
+- `--slots <n> --slot-base <id>`: creates `<id>` for one slot, or `<id>_1` through `<id>_n` for two
+  or more, as empty directories.
 - `--slot <id>` (repeatable): creates one directory per named id instead of a numbered range.
 - `--source <path>`: duplicates that path into each seeded slot instead of creating it empty.
 

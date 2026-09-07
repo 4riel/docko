@@ -7,12 +7,16 @@ registry-backed operation flows through them.
 ## Package boundaries
 
 `packages/core` owns protocol semantics: claim state transitions, session manifest fields, stale
-evaluation, delegation lifetime, registry and mirror persistence, and slot-path authorization. Nothing
-outside `packages/core` may redefine these. `packages/cli` owns command names, flags, JSON payload
-shaping, environment fallback for session resolution, and interactive onboarding, but it does not
-decide who owns a claim or when a delegation is valid. `packages/adapters/*` own runtime hook
-integration, settings installation, and runtime-specific metadata; an adapter must not convert
-delegated authority into ownership, persist parallel lock state, or bypass core validation.
+evaluation, delegation lifetime, registry and mirror persistence, and slot-path authorization.
+Nothing outside `packages/core` may redefine these.
+
+`packages/cli` owns command names, flags, JSON payload shaping, environment fallback for session
+resolution, and interactive onboarding. It does not decide who owns a claim or when a delegation is
+valid.
+
+`packages/adapters/*` own runtime hook integration, settings installation, and runtime-specific
+metadata. An adapter must not convert delegated authority into ownership, persist parallel lock
+state, or bypass core validation.
 
 See [Protocol](protocol.md) for the semantics each boundary protects.
 
@@ -44,38 +48,39 @@ without a second source of truth. Read [State files](state-files.md) for every f
 | n/a | `errors.ts` | The `DockoError` class and error codes. |
 | n/a | `paths.ts` | Path calculation for the registry, sessions, logs, and locks. |
 | n/a | `types.ts` | Every TypeScript interface for the protocol. |
-| n/a | `constants.ts` | The schema version constant. |
+| n/a | `constants.ts` | The schema version, directory names, stale windows, janitor caps, and retention limits. |
 
 `MutationGate` serializes every registry-backed operation through a lock directory at
-`docko/.registry.lock/`. Even `status` uses this path, so stale cleanup and slot discovery converge on
-one consistent view before any response is built. The one exception is a write-authorization check for
-a path outside every managed slot, which is answered from an unlocked registry read because no fresh
-claim state can change that answer.
+`docko/.registry.lock/`. Even `status` uses this path, so stale cleanup and slot discovery converge
+on one consistent view before any response is built. The one exception is a write-authorization
+check for a path outside every managed slot, which is answered from an unlocked registry read
+because no fresh claim state can change that answer.
 
-`StaleJanitor` is pure in-memory logic: it never reads files directly. It computes whether a claim is
-stale, prefers active session and delegated-child activity over claim timestamps, and clears stale
-claims and delegations before the registry is written back.
+`StaleJanitor` is pure in-memory logic: it never reads files directly. It computes whether a claim
+is stale, prefers active session and delegated-child activity over claim timestamps, and clears
+stale claims and delegations before the registry is written back.
 
 `SessionSherpa` owns session manifest files as a surface separate from the registry. It enforces
-active session ID uniqueness, lists active manifests from the hot directory only, migrates ended
+active session id uniqueness, lists active manifests from the hot directory only, migrates ended
 manifests into `sessions/ended/` lazily, and deletes ended manifests past the retention window.
 
 ## Operation flow
 
-Operations such as `status`, `claim`, `release`, `delegate`, `heartbeat`, and `render` follow the same
-path:
+Operations such as `status`, `claim`, `release`, `delegate`, `heartbeat`, and `render` follow the
+same path:
 
 1. Acquire the mutation lock.
 2. Load or initialize the registry, and snapshot its comparable serialization.
 3. Re-discover slot resources from `slots/`, including application-scoped nested slots.
 4. Load active session manifests, relocating legacy ended ones out of the hot directory.
-5. Run stale cleanup in memory, ending at most 100 stale sessions in one pass.
+5. Run stale cleanup in memory, under the caps in [Protocol](protocol.md#stale-recovery).
 6. Execute the operation-specific logic.
 7. Write the registry and mirror only when the document differs from the snapshot.
 8. Release the lock, if this process still holds it.
 
-Step 7 is what keeps a read-only command read-only: `status`, `session list`, and `logs` write
-nothing unless the janitor changed something.
+Step 7 is what keeps `status` read-only: it rewrites `registry.json` and `registry.md` only when
+the janitor released something or slot discovery found a change on disk. `session list` and `logs`
+never take the registry path at all.
 
 ## Failure model
 

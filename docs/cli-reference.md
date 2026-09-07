@@ -23,8 +23,8 @@ discusses. `<workspace-root>` stands in for the absolute path docko resolved.
 
 The starting point is `--root`, then `DOCKO_ROOT`, then the current directory. Read and write
 commands resolve up from there to the nearest directory that owns `docko/registry.json`, the way
-git locates `.git`, and report the answer as `resolved_root`. Running with `--root .` from inside a
-slot therefore works.
+git locates `.git`, and report the answer as `resolved_root`. Running a read or write command from
+inside a slot therefore works.
 
 `docko init` and `docko adapter claude-code install` act on the directory they were pointed at and
 never resolve up. Both refuse a directory inside another workspace root's `slots/` tree with
@@ -55,16 +55,9 @@ refused still prints usage.
 
 ### Exit codes
 
-| Exit | Meaning |
-| --- | --- |
-| `0` | The command succeeded. |
-| `1` | Usage error or missing resource. |
-| `2` | Ownership or active-id conflict. |
-| `3` | Ambiguous session. |
-| `4` | Missing or unavailable session. |
-| `5` | Corrupted registry. |
-
-[Errors](errors.md) maps every error code to its exit code and its recovery command.
+A successful command exits `0` and every failure exits between `1` and `5`.
+[Errors](errors.md#exit-codes) lists each exit code, maps every error code to it, and gives the
+recovery command.
 
 ## Global options
 
@@ -171,8 +164,9 @@ docko app ensure --root ./workspace --id backend --source ../backend --slots 2 -
 
 ### Notes
 
-- Generated slots are `main_1`, `main_2`, and so on. Their resource ids are
-  `<application-id>.<slot-name>` and their paths are `slots/<application-id>/<slot-name>`.
+- `--slots 1` generates one slot named after `--slot-base`; two or more generate `main_1`, `main_2`,
+  and so on. Their resource ids are `<application-id>.<slot-name>` and their paths are
+  `slots/<application-id>/<slot-name>`.
 - `--slot` wins over `--slots` when both are passed.
 - A slot name that already exists gets a numeric suffix instead of being overwritten.
 - Task-shaped setup lives in [Application slot pools](applications.md).
@@ -300,6 +294,8 @@ docko status --root ./workspace
 
 - `status` never fails on an ambiguous session. `summary.session_id` and `summary.my_claims` are
   empty when the acting session cannot be resolved.
+- `summary.my_claims` lists every resource this session owns or is delegated, at either scope. A
+  slot there is not proof that writes are authorized; confirm the delegation `scope` is `write`.
 - `summary.stale_candidates` lists claims quiet for more than half their stale window, with
   `owner_session_id`, `last_heartbeat_at`, `age_ms`, and `stale_after_ms`.
 - Claims the janitor released during this read appear under `janitor.released_claims`.
@@ -620,7 +616,7 @@ docko session prune --root ./workspace --dry-run
 ```json
 {
   "dry_run": true,
-  "max_age_ms": 0,
+  "max_age_ms": 28800000,
   "pruned_session_count": 0,
   "pruned_sessions": [],
   "retention_ms": 604800000,
@@ -796,7 +792,7 @@ Answers a write authorization question from the `PreToolUse` hook. It reads the 
 from stdin as `file_path` or `tool_input.file_path`.
 
 ```bash
-docko adapter claude-code pre-tool-use --root ./workspace --session agent-1
+docko adapter claude-code pre-tool-use --root ./workspace --session other-session
 ```
 
 ```json

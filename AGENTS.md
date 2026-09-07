@@ -32,7 +32,7 @@ packages/core/                  Protocol semantics, persistence, claims, delegat
   src/errors.ts                 DockoError class and error codes
   src/types.ts                  All TypeScript interfaces
   src/paths.ts                  Path calculation for registry, sessions, logs, locks
-  src/constants.ts              Schema version constant
+  src/constants.ts              Schema version, directory names, stale windows, janitor caps, retention
 
 packages/cli/                   Thin JSON CLI over DockoService
   src/index.ts                  All commands: init, app ensure, slot acquire/duplicate, status,
@@ -128,19 +128,19 @@ Skills live in `.agents/skills/` with `SKILL.md` definitions and optional `agent
 
 ### Operation Flow
 
-Every registry-backed operation (status, claim, release, delegate, heartbeat, render, authorization):
+Every registry-backed operation (status, claim, release, delegate, heartbeat, render, authorization) (a write check for a path outside every managed slot skips the lock and answers from an unlocked registry read):
 1. Acquire filesystem lock (`docko/.registry.lock/`)
 2. Load or initialize registry
 3. Re-discover slot resources from `slots/`
 4. Load session manifests
 5. Run stale cleanup in memory
 6. Execute operation logic
-7. Write updated registry and regenerate `registry.md`
+7. Write the registry and regenerate `registry.md` only when the document changed
 8. Release lock
 
 ### Error Codes
 
-Exit codes: 0 (success), 1 (usage/input), 2 (ownership conflict), 3 (ambiguous session), 4 (missing session), 5 (corrupted registry).
+Exit codes: 0 (success), 1 (usage/input), 2 (ownership conflict or failed registry write), 3 (ambiguous session), 4 (missing session), 5 (corrupted registry).
 
 Key error codes: `USAGE_ERROR`, `INVALID_ID`, `NO_ACTIVE_SESSION`, `AMBIGUOUS_SESSION`, `SESSION_NOT_FOUND`, `SESSION_ID_CONFLICT`, `RESOURCE_NOT_FOUND`, `RESOURCE_NOT_CLAIMED`, `RESOURCE_ALREADY_CLAIMED`, `RESOURCE_OWNED_BY_OTHER_SESSION`, `CORRUPTED_REGISTRY`.
 
@@ -168,7 +168,7 @@ Quick path:
    `docko slot acquire --session <session-id> --application backend --branch <branch> --task "update backend auth" --brief`
 6. Add `--prefer <slot-id>` when one specific slot is the right one.
 7. If docko asks whether it should create a fresh managed clone because all slots are busy, answer explicitly.
-8. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko.
+8. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by docko.
 9. Release it when done:
    `docko release --session <session-id> --resource slot --id <slot>`
 
@@ -178,12 +178,12 @@ Rules:
 - Reuse `DOCKO_SESSION_ID` when a runtime already set it. Otherwise choose a unique session ID for the run and use it consistently.
 - `branch` is claim metadata. docko records it and never runs `git checkout`.
 - Claims are slot-scoped. They do not reserve a branch, a PR, or individual files.
-- Read the `applications` section from `docko status --brief` when the workspace has multiple app pools.
+- Read the `applications` section from `docko status --brief` when the workspace has more than one application slot pool.
 - If docko reports `AMBIGUOUS_SESSION`, run the `suggested_command` from the error payload, or retry with an explicit `--session <id>` from `docko session list --brief`; do not end existing sessions unless the user asked for cleanup.
 - If every slot is busy and the user already approved the fallback, add `--clone-when-busy` to `docko slot acquire`.
 - Releasing a claim owned by another session requires `--force`, and the release is recorded with `forced_by_session_id`.
 - If `docko` is not on PATH, try `DOCKO_BIN`. If it still is not runnable, stop and tell the user.
 - Do not inspect slots one by one or use `docko/registry.json` as a normal fallback. Use `docko status --brief --claimed`.
 - Delegated Claude teammates inherit parent slot authority when the parent already owns the slot.
-- Do not assume Codex subagents inherit Docko session or slot authority automatically. Docko does not ship a Codex adapter yet.
+- Do not assume Codex subagents inherit docko session or slot authority automatically. docko ships no Codex adapter.
 <!-- docko:end:codex -->

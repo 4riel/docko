@@ -1,8 +1,8 @@
 # Errors
 
-Every code the `docko` CLI can print, its exit code, and the command that clears it. Read this page
-when you have an error payload in front of you; read [Troubleshooting](troubleshooting.md) when you
-have a symptom instead.
+This page lists every code the `docko` CLI can print, its exit code, and the command that clears it.
+Read it when you have an error payload in front of you; read [Troubleshooting](troubleshooting.md)
+when you have a symptom instead.
 
 ## Error output shape
 
@@ -56,7 +56,7 @@ human-readable text.
 | `APPLICATION_SLOT_CONFLICT` | 2 | The application id collides with an existing flat slot id. | Pick another application id, or rename `slots/<id>`. |
 | `ATOMIC_WRITE_FAILED` | 2 | Six rename attempts failed to replace a docko file. | Release the handle on `file_path`, then retry. |
 | `CLAUDE_SETTINGS_INVALID` | 2 | The existing `.claude/settings.local.json` is not valid JSON. | Repair or delete that file, then re-run the install. |
-| `CORRUPTED_REGISTRY` | 5 | `docko/registry.json` does not parse or fails schema validation. | Restore the registry from a known-good copy. |
+| `CORRUPTED_REGISTRY` | 5 | `docko/registry.json` does not parse as JSON, or its top-level shape is not a registry document. | Restore the registry from a known-good copy. |
 | `INIT_CANCELLED` | 1 | Guided `docko init` was answered `n` at the root confirmation. | Re-run `docko init` and confirm the root. |
 | `INVALID_ID` | 1 | An id has characters outside `[\w][\w\-.]*`, or contains `..`. | Use an id such as `main` or `app-alpha`. |
 | `NO_ACTIVE_SESSION` | 4 | No session was named and no session is active. | Run `docko session start --root ./workspace --runtime shell --session <id>`. |
@@ -69,7 +69,7 @@ human-readable text.
 | `RESOURCE_MUTATION_DENIED` | 2 | `docko resource ensure` tried to move a claimed resource's path. | Release the resource, then re-run `resource ensure`. |
 | `RESOURCE_NOT_CLAIMED` | 1 | The resource is free, so there is nothing to release. | Confirm with `docko status --root ./workspace --brief --claimed`. |
 | `RESOURCE_NOT_FOUND` | 1 | No resource with that type and id is registered. | Check the id in `docko status`, or run `docko resource ensure`. |
-| `RESOURCE_OWNED_BY_OTHER_SESSION` | 2 | A session that does not own the claim tried to release it. | Release as the owner, or add `--force`. |
+| `RESOURCE_OWNED_BY_OTHER_SESSION` | 2 | A session that does not own the claim tried to release, heartbeat, or delegate it. | Act as the owner session, or add `--force` on `release`. |
 | `ROOT_INSIDE_SLOT` | 1 | A scaffolding command was pointed inside a managed `slots/` tree. | Re-run against the payload's `workspace_root`. |
 | `ROOT_NOT_DIRECTORY` | 1 | `--root` points at a file. | Pass a directory path. |
 | `ROOT_NOT_WORKSPACE` | 1 | `adapter claude-code install` was pointed at a non-workspace directory inside a workspace. | Re-run against the payload's `workspace_root`. |
@@ -125,7 +125,7 @@ payload repeats it as `provided_root` and `workspace_root`.
 docko init --root ./workspace
 ```
 
-Every non-scaffolding command resolves up instead of failing. `docko status --root .` from inside a
+Every non-scaffolding command resolves up instead of failing. Running `docko status` from inside a
 slot answers for the owning workspace and reports it as `resolved_root`.
 
 ### ROOT_NOT_WORKSPACE
@@ -197,17 +197,17 @@ scanning.
 
 ### CORRUPTED_REGISTRY
 
-`docko/registry.json` either does not parse as JSON or does not satisfy the registry schema. docko
-refuses every operation until it parses, because a partial read would hand out ownership answers it
-cannot support.
+`docko/registry.json` either does not parse as JSON or does not carry the top-level registry shape
+docko expects. docko refuses every operation until it parses, because a partial read would hand out
+ownership answers it cannot support.
 
 ```bash
 docko render --root ./workspace
 ```
 
 Restore `docko/registry.json` from version control or a backup, then run a read command to confirm
-it validates. `docko/registry.md` is generated output and never a recovery source. See
-[State files](state-files.md) for the shape the schema expects.
+it loads. `docko/registry.md` is generated output and never a recovery source. See
+[State files](state-files.md) for the shape a registry document takes.
 
 ## Authorization reasons
 
@@ -223,10 +223,7 @@ carries no path at all.
 | `no-file-path` | allowed | The hook payload carries no file path to check. |
 | `slot-not-claimed` | denied | The slot is free, or its directory name is not a valid resource id. |
 | `claim-expired` | denied | The janitor released this session's own claim on the slot. |
-| `unrelated-session` | denied | Another session owns the claim, or the delegation is `read`. |
-
-An unregistered or ended session is answered, not rejected. It is evaluated as a session that owns
-nothing, so a write inside `slots/` is denied with its natural reason and `session_known: false`.
+| `unrelated-session` | denied | Another session owns the claim, or the acting session's delegation is `read`. |
 
 Denied writes reach Claude Code as `permissionDecision: "deny"` with a reason string that names the
 slot and the recovery command. [Use docko with Claude Code](claude-code.md) shows what the reader

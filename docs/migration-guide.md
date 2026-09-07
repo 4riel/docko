@@ -12,7 +12,7 @@ Handwritten lock files and shell conventions get replaced by docko's explicit st
 2. Move resource ownership into `docko claim`, `docko heartbeat`, `docko release`, and
    `docko delegate` instead of writing marker files by hand.
 3. Treat `docko/registry.json` as the canonical resource state instead of per-slot marker files. See
-   [state files](state-files.md) for its shape.
+   [State files](state-files.md) for its shape.
 4. Stop editing any hand-maintained lock summary. `docko/registry.md` is generated output; it is
    never the source of truth.
 
@@ -51,7 +51,7 @@ the concerns cleanly.
 1. Move claim and release semantics into `docko`'s runtime-neutral CLI, described in
    [runtime-neutral command surface](protocol.md#runtime-neutral-command-surface).
 2. Keep runtime hooks as adapter glue: starting sessions, requesting write authorization, and
-   automating delegation. See [use docko with Claude Code](claude-code.md) for the reference
+   automating delegation. See [Use docko with Claude Code](claude-code.md) for the reference
    implementation.
 3. Preserve runtime-specific detail only in claim metadata (`--branch`, `--task`, `--runtime`) or
    session `metadata`, never as a second source of truth for ownership.

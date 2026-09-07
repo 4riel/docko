@@ -1,12 +1,11 @@
 # Workspace layout
 
-An example of a workspace root after `docko init`, an application slot pool, and a Claude Code
+This page shows a workspace root after `docko init`, an application slot pool, and a Claude Code
 install, so you can recognize your own.
 
 ## A populated workspace
 
-This is the tree after `docko init`, an application slot pool, a Claude Code install, and a few
-sessions worth of ordinary use.
+The tree below is that workspace after two sessions have claimed and released slots.
 
 ```text
 workspace/
@@ -45,21 +44,22 @@ workspace/
 
 ## What docko creates
 
-- `docko init` always creates `docko/` and `slots/`, plus a starter `slots/main` unless you pass
-  `--slot` explicitly.
+- `docko init` always creates `docko/` and `slots/`. It adds a starter `slots/main` only when you
+  pass no `--slot` and `slots/` is empty; existing slot directories are adopted instead.
 - `docko app ensure --id backend ...` adds `slots/backend/` and its seeded slot directories; it
   also registers the application in `docko/registry.json`.
-- `docko adapter claude-code install` (or `docko init --claude`) adds `.claude/`, `.claude-plugin/`,
-  and the `CLAUDE.md`/`AGENTS.md` snippets under `.claude/snippets/`. See
-  [use docko with Claude Code](../docs/claude-code.md) for what each file does.
-- `docko/registry.md` and the files under `docko/sessions/` and `docko/logs/` are generated as you
-  run commands; they do not exist right after `init` with no sessions started yet.
+- `docko adapter claude-code install` (or `docko init --claude`) adds `.claude/`,
+  `.claude-plugin/`, and the `CLAUDE.md` and `AGENTS.md` snippets under `.claude/snippets/`. See
+  [Use docko with Claude Code](../docs/claude-code.md) for what each file does.
+- `docko init` writes `docko/registry.json`, `docko/registry.md`, `docko/sessions/`, and the first
+  `docko/logs/YYYY-MM-DD.jsonl` immediately. Session manifests under `docko/sessions/` appear as
+  sessions start.
 
 ## What your workflow adds
 
 `README.md`, `AGENTS.md`, `CLAUDE.md`, `docs/`, and `plans/` are not written by docko. They are
 ordinary root-level files your own workflow keeps beside the managed directories. docko never reads
-or writes them except to append the `CLAUDE.md`/`AGENTS.md` snippets when you ask it to during
+or writes them except to append the `CLAUDE.md` and `AGENTS.md` snippets when you ask it to during
 `init`.
 
 ## Related

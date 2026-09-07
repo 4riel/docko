@@ -31,8 +31,8 @@ pnpm test:coverage
 - `pnpm test` and `pnpm test:coverage` both rebuild first, then run the Node test runner
   sequentially (`--test-concurrency=1`) to avoid CLI child-process contention.
 - Tests run against built `dist/` output, not the TypeScript source. Always build before you test.
-- `pnpm test:coverage` gathers coverage from `packages/*/dist/*.js`, so the numbers reflect the
-  shipped CLI, core, and adapter surfaces.
+- `pnpm test:coverage` gathers coverage from built output. See [Tests](tests.md) for what coverage
+  measures.
 
 > **Note:** `pnpm release:verify` runs the full check plus the publish staging and manifest checks.
 > `pnpm publish:alpha:dry-run` adds a dry-run `npm publish`. Use these before a release, not for a
@@ -73,9 +73,9 @@ pnpm test:coverage
 
 ## Working in parallel
 
-Splitting a change by role keeps each edit inside its owning surface, even when several sessions
-work the same task at once. A repo-wide change often splits across four roles, each backed by a
-skill in `.agents/skills/`:
+Splitting a change by role keeps each edit inside its owning surface, even when two or more
+sessions work the same task at once. A repo-wide change often splits across four roles, each backed
+by a skill in `.agents/skills/`:
 
 - Repo cartographer (`docko-repo`): maps ownership boundaries and the verification surface for a
   task.

@@ -23,7 +23,7 @@ of opening a public issue or pull request.
 1. Go to the repository's Security tab.
 2. Choose Report a vulnerability to open a private advisory.
 
-Direct link: <https://github.com/4riel/docko/security/advisories/new>
+Direct link: [Open a private advisory](https://github.com/4riel/docko/security/advisories/new)
 
 Include enough detail to reproduce the problem: the affected version, the `docko` command and
 options involved, the workspace state, and the observed versus expected behavior. You receive an

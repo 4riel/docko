@@ -48,7 +48,7 @@ Everything docko ships, grouped by what you are trying to do.
 
 ## Moved and removed pages
 
-- `concepts.md` is unchanged in place; `faq.md` now points at the page that owns each answer.
+- `concepts.md` keeps its filename; `faq.md` now points at the page that owns each answer.
 - `contributing.md` is now [development.md](development.md).
 - `docs-sync.md`, `agent-onboarding.md`, and `agent-team-kit.md` merged into
   [development.md](development.md) and [delegation.md](delegation.md).

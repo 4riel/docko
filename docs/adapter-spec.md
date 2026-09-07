@@ -1,8 +1,8 @@
 # Adapter specification
 
 This page documents the contract a runtime adapter must satisfy, and how the Claude Code adapter
-fills it. It is generated from `packages/adapters/claude-code/src/index.ts` and the plugin bundle
-under `packages/adapters/claude-code/plugin/`.
+fills it. It tracks `packages/adapters/claude-code/src/index.ts` and the plugin bundle under
+`packages/adapters/claude-code/plugin/`.
 
 ## What an adapter is
 
@@ -37,7 +37,7 @@ Claude Code user's point of view.
 An adapter:
 
 - creates or discovers a runtime session identity, then calls `session start` and `session end`.
-- exposes the current session ID to the runtime, so later commands do not need `--session`.
+- exposes the current session id to the runtime, so later commands do not need `--session`.
 - calls the write-authorization check before a write and translates the result into the runtime's
   own permission model. The check returns an `AuthorizationResult`: `allowed`, `reason`, and the
   claim fields needed to explain a denial without a second call.

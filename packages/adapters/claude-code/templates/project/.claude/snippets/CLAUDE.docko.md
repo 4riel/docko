@@ -14,7 +14,7 @@ Quick path:
 7. Add `--prefer <slot-id>` when one specific slot is the right one. docko takes it when free and rotates normally when it is not.
 8. If every slot is busy and docko asks whether it should create a fresh managed clone, answer explicitly.
 9. Use `/dock-claim <slot> <branch> <task>` or `docko claim --session "$DOCKO_SESSION_ID" --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot.
-10. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko.
+10. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by docko.
 11. Release it with `/dock-release <slot>` or:
     `docko release --session "$DOCKO_SESSION_ID" --resource slot --id <slot>`
 
@@ -24,7 +24,7 @@ Rules:
 - Never invent a session id. The write hook checks the runtime's own session, so a made-up id claims a slot that then blocks your own writes. Use `$DOCKO_SESSION_ID`, or an id from `docko session list --brief`.
 - `branch` is claim metadata. docko records it and never runs `git checkout`.
 - Claims are slot-scoped. They do not reserve a branch, a PR, or individual files.
-- Read the `applications` section from `docko status --brief` when the workspace has multiple app pools.
+- Read the `applications` section from `docko status --brief` when the workspace has more than one application slot pool.
 - If a parent session already owns the slot, reuse that authority. Do not open a second claim for the same slot.
 - Subagents started with the Agent tool share the parent's session id and inherit its claim. A separately launched `claude` process needs `docko delegate`.
 - If docko reports `AMBIGUOUS_SESSION`, run the `suggested_command` from the error payload; do not end existing sessions unless the user asked for cleanup.

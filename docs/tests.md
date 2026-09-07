@@ -23,19 +23,38 @@ sequentially (`--test-concurrency=1`) to avoid CLI child-process contention.
 
 | File | Surface | What it covers |
 | --- | --- | --- |
-| `tests/core.unit.test.mjs` | `packages/core` | Errors, filesystem helpers, session resolution, lock ownership, mutation-gate timeout, clock-skew and refresh behavior, `REGISTRY_LOCK_LOST`, slot containment, ignored slot directories, the claim heartbeat throttle, and the ended-manifest touch no-op. |
-| `tests/core.services.test.mjs` | `packages/core` | Registry validation, stale recovery, logs, mirror rendering, resource-catalog defaults, stale-lock quarantine under contention, and the uncapped `session prune` drain. |
-| `tests/core.persistence.test.mjs` | `packages/core` | Atomic-write retries, ended-manifest relocation and retention, temp-artifact sweeping on the read path, authorization for undiscovered slot directories, and short-stale-window heartbeats. |
-| `tests/cli.unit.test.mjs` | `packages/cli` | The CLI parser and interactive `init`, including repeated flags, prompt flows, payload fallbacks, and install edge cases. |
-| `tests/docko.e2e.test.mjs` | `packages/cli` and `packages/core` | End-to-end CLI flows: init, claims, release, delegation, stale recovery, logs, authorization, `resource ensure` without `--path`, ignored slot directories, the hook payload session id, and the `--dest` guard. |
-| `tests/claude-code-adapter.test.mjs` | `packages/adapters/claude-code` | Adapter settings, installer behavior, settings merge, doctor diagnostics, and real hook command execution. |
-| `tests/claude-plugin.test.mjs` | `packages/adapters/claude-code` plugin bundle | Manifests, the marketplace entry, hook shapes and timeouts, the launcher version header, the repo's own dogfood copies, the `CLAUDE_ENV_FILE` export, per-reason deny messages, and shipped command and skill guidance. |
+| `tests/core.unit.test.mjs` | `packages/core` | Errors, filesystem helpers, session resolution, and lock ownership. |
+| `tests/core.services.test.mjs` | `packages/core` | Service orchestration: registry validation, stale recovery, logs, and the mirror. |
+| `tests/core.persistence.test.mjs` | `packages/core` | What docko writes to disk and reclaims from it. |
+| `tests/cli.unit.test.mjs` | `packages/cli` | The argument parser and the interactive `init` flow. |
+| `tests/docko.e2e.test.mjs` | `packages/cli` and `packages/core` | End-to-end CLI flows against a real workspace. |
+| `tests/claude-code-adapter.test.mjs` | `packages/adapters/claude-code` | The repo-local install, its settings, and hook command execution. |
+| `tests/claude-plugin.test.mjs` | `packages/adapters/claude-code` plugin bundle | The distributable bundle's manifests, hooks, and shipped guidance. |
 
 ### Notes
 
-`tests/helpers/cli-test-helpers.mjs` holds the shared child-process and workspace helpers every suite
-above uses. It strips ambient `DOCKO_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, and `DOCKO_ROOT` so a
-suite run inside an agent session cannot inherit that session.
+Each suite covers more than its one-clause summary:
+
+- `core.unit`: mutation-gate timeout, clock skew and lock refresh, `REGISTRY_LOCK_LOST`, slot
+  containment, ignored slot directories, the claim heartbeat throttle, and the ended-manifest touch
+  no-op.
+- `core.services`: resource-catalog defaults, stale-lock quarantine under contention, and the
+  uncapped `session prune` drain.
+- `core.persistence`: atomic-write retries, ended-manifest relocation and retention, temp-artifact
+  sweeping on the read path, authorization for undiscovered slot directories, and short-stale-window
+  heartbeats.
+- `cli.unit`: repeated flags, prompt flows, payload fallbacks, and install edge cases.
+- `docko.e2e`: init, claims, release, delegation, stale recovery, logs, authorization,
+  `resource ensure` without `--path`, ignored slot directories, the hook payload session id, and the
+  `--dest` guard.
+- `claude-code-adapter`: settings merge, doctor diagnostics, and real hook command execution.
+- `claude-plugin`: the marketplace entry, hook shapes and timeouts, the launcher version header, the
+  repo's own dogfood copies, the `CLAUDE_ENV_FILE` export, per-reason deny messages, and shipped
+  command and skill guidance.
+
+`tests/helpers/cli-test-helpers.mjs` holds the shared child-process and workspace helpers every
+suite above uses. It strips ambient `DOCKO_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, and `DOCKO_ROOT`,
+so a suite run inside an agent session cannot inherit that session.
 
 ## Coverage
 

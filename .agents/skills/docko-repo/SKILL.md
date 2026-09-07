@@ -5,6 +5,9 @@ description: Repository onboarding and working conventions for the docko monorep
 
 # docko Repo
 
+How this monorepo is laid out and which surface owns which change. Use it when planning work
+anywhere in the repo.
+
 ## Read first
 
 - `AGENTS.md`

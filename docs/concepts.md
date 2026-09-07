@@ -11,7 +11,7 @@ managed slot.
 
 `docko init` creates the workspace root's `docko/` and `slots/` directories. Everything docko writes
 stays inside those two directories; anything else at the root belongs to your own workflow. See
-[state files](state-files.md#workspace-layout) for the full tree.
+[State files](state-files.md#workspace-layout) for the full tree.
 
 ## Slot
 
@@ -26,9 +26,9 @@ you are done. See [resource model](protocol.md#resource-model) for slot discover
 ## Application
 
 An application registers a named group of slots, such as `backend` or `frontend`, with
-`docko app ensure`. It groups those slots under one `application_id` and carries `keywords` that
-docko can match against a claim's `--task` or `--branch` text to infer the right application
-automatically. See [application slot pools](applications.md) for the full workflow.
+`docko app ensure`. It groups those slots under one id and carries keywords that docko matches
+against the task and branch text of a claim, so it can infer the right application on its own. See
+[Application slot pools](applications.md) for the full workflow.
 
 ## Resource
 
@@ -39,10 +39,10 @@ and are not tied to a directory. See [resource model](protocol.md#resource-model
 ## Session
 
 A session is a runtime execution identity, stored as its own manifest under `docko/sessions/`.
-Sessions are not embedded in the registry: the registry references them by ID from claims and
-delegations. A session is active while its manifest has no `ended_at`. See
+Sessions are not embedded in the registry: the registry references them by id from claims and
+delegations. A session stays active until it ends. See
 [session lifecycle](protocol.md#session-lifecycle) and the session manifest fields in
-[state files](state-files.md).
+[State files](state-files.md).
 
 ## Claim
 
@@ -53,8 +53,8 @@ has exactly one owner session. Only the owner can heartbeat, delegate, or releas
 ## Delegation
 
 Delegation is a resource-scoped grant of write or read authority from the owner session to a child
-session. It does not transfer ownership: `owner_session_id` never changes, and child authority ends
-the moment the owner's claim ends. See [delegate a slot to a teammate](delegation.md) for the
+session. It does not transfer ownership: the owner session never changes, and child authority ends
+the moment the owner's claim ends. See [Delegate a slot to a teammate](delegation.md) for the
 workflow and [ownership and delegation](protocol.md#ownership-and-delegation) for the rules.
 
 ## Stale recovery
@@ -70,21 +70,21 @@ File-write authorization is the slot-path check that adapters use to allow or de
 governs only paths inside managed slot directories: an owner or a write-scoped delegate is allowed,
 and every other write into a claimed slot is denied. See
 [file-write authorization](protocol.md#file-write-authorization) and
-[errors](errors.md#authorization-reasons) for the full reason table.
+[Errors](errors.md#authorization-reasons) for the full reason table.
 
 ## Registry and mirror
 
-`docko/registry.json` is the canonical machine-readable state: workspace metadata, applications,
-resources, claims, and delegations. `docko/registry.md` is a generated human-readable mirror of the
-same state. Treat the registry as authoritative and the mirror as read-only output: never edit it by
-hand. See [state files](state-files.md) for both shapes.
+`docko/registry.json` is the canonical machine-readable state of the workspace, its applications,
+its resources, and the claims and delegations on them. `docko/registry.md` is a generated
+human-readable mirror of the same state. Treat the registry as authoritative and the mirror as
+read-only output: never edit it by hand. See [State files](state-files.md) for both shapes.
 
 ## Runtime adapter
 
 A runtime adapter connects an agent runtime to the core protocol: it starts sessions, requests
 write authorization, and automates delegation. An adapter may not redefine ownership, stale
 recovery, or delegation lifetime; those stay in the core. Claude Code is the only implemented
-runtime adapter today. See [adapter specification](adapter-spec.md).
+runtime adapter today. See [Adapter specification](adapter-spec.md).
 
 ## Related
 

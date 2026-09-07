@@ -16,19 +16,14 @@ cover the ways that resolution fails.
 ### docko says there is no active session
 
 ```json
-{
-  "error": {
-    "code": "NO_ACTIVE_SESSION",
-    "message": "No active session found.",
-    "active_session_count": 0,
-    "resolution": { "explicit_session_id": null, "env_session_id": null }
-  }
-}
+{"error": {"code": "NO_ACTIVE_SESSION", "message": "No active session found.",
+           "active_session_count": 0,
+           "resolution": {"explicit_session_id": null, "env_session_id": null}}}
 ```
 
-Session-aware commands need a session. docko looks at `--session`, then `DOCKO_SESSION_ID`, then
-`CLAUDE_CODE_SESSION_ID`, then the single active session. An environment id matching no active
+Session-aware commands need a session, and none resolved. An environment id matching no active
 session is ignored rather than fatal, so `env_session_id` can be set and the command still fails.
+See [resolve](protocol.md#resolve) for the full order.
 
 Start a session and pass its id:
 
@@ -62,16 +57,15 @@ Run the `suggested_command` from the payload, or pick an id yourself:
 docko session list --root ./workspace --brief --limit 5
 ```
 
-Do not end the listed sessions to get past this. They are active, not stale. Never invent a session
-id either: the write hook checks the runtime's own id, so a made-up id claims a slot that then
-blocks your own writes. See [AMBIGUOUS_SESSION](errors.md#ambiguous_session).
+Do not end the listed sessions to get past this, and never invent an id: the write hook checks the
+runtime's own id. See [AMBIGUOUS_SESSION](errors.md#ambiguous_session).
 
-### session list keeps growing
+### `session list` keeps growing
 
 Sessions stay active until something ends them, so a crashed runtime leaves its manifest behind. The
 janitor ends sessions that have been quiet past `workspace.config.janitor.session_stale_after_ms`
-(8 hours by default) on every registry mutation, but it does not reach back over a long backlog in
-one pass: it ends at most 100 stale sessions per pass.
+(8 hours by default) on every registry mutation, but it works under the per-pass caps in
+[stale recovery](protocol.md#stale-recovery), so a long backlog takes more than one pass.
 
 Clear a backlog on demand, checking the set first:
 
@@ -204,17 +198,12 @@ Raise the window for a long job with `--stale-after-ms <n>` on `claim` or `slot 
 ### Release says I do not own the slot
 
 ```json
-{
-  "error": {
-    "code": "RESOURCE_OWNED_BY_OTHER_SESSION",
-    "resource_id": "main",
-    "owner_session_id": "leader",
-    "suggested_command": "docko release --root ./workspace --resource slot --id main --force --session helper"
-  }
-}
+{"error": {"code": "RESOURCE_OWNED_BY_OTHER_SESSION", "resource_id": "main",
+           "owner_session_id": "leader"}}
 ```
 
-Only the owner session releases a claim. A delegated child cannot, and neither can a sibling.
+Only the owner session releases a claim. A delegated child cannot, and neither can a sibling. A
+release that reports `RESOURCE_NOT_CLAIMED` instead means the slot is already free.
 
 Release as the owner:
 
@@ -224,9 +213,6 @@ docko release --root ./workspace --session leader --resource slot --id main
 
 > **Warning:** `--force` takes a slot from a live session. Use it only when the owner is gone and
 > you are deliberately recovering the slot.
-
-A release that reports `RESOURCE_NOT_CLAIMED` instead means the slot is already free. The janitor or
-a `session end` released it first, and there is nothing left to do.
 
 ## Writes denied in Claude Code
 
@@ -396,37 +382,32 @@ fail on a busy or scanned filesystem.
            "owner": {"pid": 99999, "hostname": "demo-host", "acquired_at": "2026-09-07T07:17:55.419Z"}}}
 ```
 
-Another process held `docko/.registry.lock/` for the whole 10 second budget. Concurrent hooks on a
-busy workspace are the common cause.
+Another process held `docko/.registry.lock/` for the whole wait budget. Concurrent hooks on a busy
+workspace are the common cause.
 
-Retry once. A live holder re-stamps the lock every 10 seconds and any caller breaks a lock older
-than 30 seconds, so a real holder clears on its own:
+Retry once, then delete `docko/.registry.lock/` only when no docko process is running:
 
 ```bash
 docko status --root ./workspace --brief
 ```
 
-Delete `docko/.registry.lock/` only when no docko process is running. A
-`docko/.registry.lock.stale-*` directory is a lock docko quarantined while breaking it; the temp
-sweeper reclaims it. Pollers that call `docko status` on a timer must back off after repeated
-timeouts.
+See [REGISTRY_LOCK_TIMEOUT](errors.md#registry_lock_timeout) for the stale window and the
+back-off rule for pollers.
 
 ### A command reports that it lost the registry lock
 
-`REGISTRY_LOCK_LOST` means this command held the lock, ran past the 30 second stale window without
-its refresh timer getting a turn, and another process broke the lock underneath it. A suspended
-machine and a process paused in a debugger both produce it.
+Another process broke this command's lock before it wrote, which a suspended machine or a paused
+debugger both cause. Nothing was written.
 
-Nothing was written. The ownership check runs immediately before the registry write, so the registry
-is exactly as it was.
+Retry the command:
 
 ```bash
 docko status --root ./workspace --brief
 ```
 
-Retry the command.
+See [REGISTRY_LOCK_LOST](errors.md#registry_lock_lost) for why the registry is untouched.
 
-### Writes fail with EPERM on Windows
+### Writes fail with `EPERM` on Windows
 
 ```json
 {
@@ -439,18 +420,14 @@ Retry the command.
 }
 ```
 
-docko writes to a sibling temp file and renames it into place. On Windows that rename fails with
-`EPERM`, `EBUSY`, `EACCES`, or `ENOTEMPTY` while another process holds the destination open without
-share-delete. docko retries six times with backoff before raising this.
+Another process holds the destination file open, so the atomic rename cannot replace it. A
+real-time antivirus scanner is the usual holder, and a read-only attribute produces the same code.
 
-A real-time antivirus scanner is the usual holder, and a read-only attribute on the destination
-produces the same `EPERM`. Exclude the workspace's `docko/` directory from real-time scanning, and
-clear read-only attributes on `docko/registry.json`.
+Exclude the workspace's `docko/` directory from real-time scanning, and clear read-only attributes
+on `docko/registry.json`. See [ATOMIC_WRITE_FAILED](errors.md#atomic_write_failed) for the retry
+behavior. A failed write of the generated `docko/registry.md` never fails a command.
 
-A failed write of the generated `docko/registry.md` never fails a command. The registry mirror is
-best-effort and the failure is logged.
-
-### Stray .tmp files under docko/
+### Stray `.tmp` files under `docko/`
 
 Every atomic write stages content in a sibling `<name>.<hex>.tmp` file. A process stopped mid-write,
 such as a hook that hit its timeout, leaves one behind.

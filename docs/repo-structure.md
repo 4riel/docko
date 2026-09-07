@@ -5,6 +5,8 @@ managed workspace root, read [State files](state-files.md).
 
 ## Repository layout
 
+Everything below the repository root, with the surface each directory owns.
+
 ```text
 docko/
 |-- .agents/

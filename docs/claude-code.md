@@ -30,7 +30,7 @@ docko init --root ./workspace
 
 The hook launcher runs `docko` from `PATH`. When `docko` is missing it falls back to
 `npx --yes --package docko-workspace@alpha docko`, which is slow on a cold cache. `DOCKO_BIN`
-overrides both, and accepts a multi-token value such as `node "C:\path\to\docko.js"` on Windows.
+overrides both, and accepts a multi-token value such as `node "<path-to>/docko.js"`.
 
 > **Note:** The hooks exit silently in any directory without a `docko/registry.json`, so the plugin
 > can stay enabled across every project.
@@ -60,12 +60,16 @@ settings:
 .claude/settings.local.json
 ```
 
-Three of those are generated machine state and are rewritten on every install:
-`.claude-plugin/docko/plugin.json`, `.claude-plugin/docko/hooks/hooks.json`, and
-`.claude/settings.docko.json`. The hook launcher is refreshed whenever its
-`// docko-launcher-version:` header differs from the shipped one. Commands, the skill, and the
-snippets are yours to edit and are preserved unless you pass `--force`. A file whose content does
-not move is reported under `unchanged_files` rather than `written_files`.
+The install treats those files differently:
+
+- `.claude-plugin/docko/plugin.json`, `.claude-plugin/docko/hooks/hooks.json`, and
+  `.claude/settings.docko.json` are generated machine state, rewritten on every install.
+- The hook launcher is refreshed whenever its `// docko-launcher-version:` header differs from the
+  shipped one.
+- Commands, the skill, and the snippets are yours to edit and are preserved unless you pass
+  `--force`.
+- A file whose content does not move is reported under `unchanged_files` rather than
+  `written_files`.
 
 Merge `.claude/snippets/CLAUDE.docko.md` into `CLAUDE.md` so Claude reads the workspace rules
 outside a hook. The guided `init` flow offers to inject it for you.
@@ -77,29 +81,37 @@ To install the adapter into a workspace root that already exists, run
 
 ## What the hooks do
 
-| Event | What docko does | Timeout |
-| --- | --- | --- |
-| `SessionStart` | Registers the Claude session and exports its id into the session environment. | 60 |
-| `SessionEnd` | Ends the docko session and releases the claims it holds. | 15 |
-| `PreToolUse` | Authorizes an `Edit` or `Write` against the claim on the target slot. | 30 |
-| `SubagentStart` | Registers a delegated child session and copies the parent's delegations. | 30 |
+| Event | What docko does |
+| --- | --- |
+| `SessionStart` | Registers the Claude session and exports its id into the session environment. |
+| `SessionEnd` | Ends the docko session and releases the claims it holds. |
+| `PreToolUse` | Authorizes an `Edit` or `Write` against the claim on the target slot. |
+| `SubagentStart` | Registers a delegated child session and copies the parent's delegations. |
+
+See [Adapter specification](adapter-spec.md) for the CLI subcommand and timeout behind each event.
 
 `SessionStart` registers the session under Claude Code's own session id, so later hooks address it
 explicitly instead of relying on single-active-session resolution. It injects the session id, the
-workspace root, and the acquire, claim, and release commands as context. When Claude Code provides
-`$CLAUDE_ENV_FILE`, the launcher appends `DOCKO_SESSION_ID`, `DOCKO_RUNTIME`, and `DOCKO_ROOT` to
-it, so a bare `docko` call from a Bash tool call resolves the right session. Only keys matching
-`^[A-Z][A-Z0-9_]*$` with single-line values are written. On hosts without an env file, the CLI
-falls back to `CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every tool call.
+workspace root, and the acquire, claim, and release commands as context.
+
+- When Claude Code provides `$CLAUDE_ENV_FILE`, the launcher appends `DOCKO_SESSION_ID`,
+  `DOCKO_RUNTIME`, and `DOCKO_ROOT` to it, so a bare `docko` call from a Bash tool call resolves
+  the right session.
+- Only keys matching `^[A-Z][A-Z0-9_]*$` with single-line values are written.
+- On hosts without an env file, the CLI falls back to `CLAUDE_CODE_SESSION_ID`, which Claude Code
+  exports into every tool call.
 
 `SessionEnd` ends the session named in the hook payload and releases every claim it holds. It emits
 no hook output.
 
 `PreToolUse` is the only event with a matcher, and the matcher is `Edit|Write`. The launcher passes
 Claude's session id as `--session`; if that call fails it retries once with the CLI's own session
-resolution. A denied write is returned as `permissionDecision: "deny"` with a reason the agent can
-act on. An allowed write emits nothing: docko vetoes unauthorized slot writes and never widens your
-normal permission flow. A payload carrying no file path is allowed with the reason `no-file-path`.
+resolution.
+
+- A denied write is returned as `permissionDecision: "deny"` with a reason the agent can act on.
+- An allowed write emits nothing: docko vetoes unauthorized slot writes and never widens your
+  normal permission flow.
+- A payload carrying no file path is allowed with the reason `no-file-path`.
 
 `SubagentStart` starts a delegated child session, copies the parent's delegations onto it, and
 exports `DOCKO_SESSION_ID`, `DOCKO_PARENT_SESSION_ID`, and `DOCKO_RUNTIME`. Subagents started with
@@ -109,7 +121,7 @@ process needs an explicit one. See [Delegate a slot to a teammate](delegation.md
 The plugin bundle registers each hook against `${CLAUDE_PLUGIN_ROOT}`. The repo-local install
 writes an absolute launcher path into `.claude/settings.local.json` and `$CLAUDE_PROJECT_DIR` into
 the committed `.claude/settings.docko.json`, so hooks resolve from any working directory and any
-shell. `docko adapter claude-code settings` prints the same fragment, and a copy of it is in
+shell. `docko adapter claude-code settings` prints the absolute form, and a copy of it is in
 [Claude Code hook settings](../examples/claude-code-settings.json).
 
 When the launcher or the CLI fails, the launcher writes a warning to stderr and exits 0. Hooks are
@@ -117,9 +129,10 @@ an operational control, not a security boundary.
 
 ## The dock commands
 
-Five slash commands ship with both install paths. Each one passes
-`--session "$DOCKO_SESSION_ID"`, and none passes `--root`: docko walks up from the current
-directory to the workspace root, so they work from inside a slot.
+Five slash commands ship with both install paths. `/dock-claim`, `/dock-heartbeat`, and
+`/dock-release` pass `--session "$DOCKO_SESSION_ID"`; `/dock-status` and `/dock-doctor` need no
+session. None passes `--root`: docko walks up from the current directory to the workspace root, so
+they work from inside a slot.
 
 | Command | What it runs | When to use it |
 | --- | --- | --- |
@@ -201,10 +214,12 @@ docko adapter claude-code doctor --root ./workspace --fix
 ```
 
 `--fix` removes hook entries pointing at a launcher that is missing or out of date, and collapses
-duplicate registrations down to the first healthy one per event and matcher. Two registrations for
-one event with different matchers are two deliberate hooks, and both survive. Entries the plugin
-owns, which point at `${CLAUDE_PLUGIN_ROOT}`, are never touched. The diagnosis then re-runs, so
-`issues` and `ok` describe the state after the fix.
+duplicate registrations down to the first healthy one per event and matcher. The diagnosis then
+re-runs, so `issues` and `ok` describe the state after the fix.
+
+- Two registrations for one event with different matchers are two deliberate hooks, and both
+  survive.
+- Entries the plugin owns, which point at `${CLAUDE_PLUGIN_ROOT}`, are never touched.
 
 ## Next steps
 

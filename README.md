@@ -35,17 +35,14 @@ Requires Node 22 or later.
 
 Pick the path that matches your runtime. Each one ends with the guide that walks you through it.
 
-**Claude Code plugin**
-Add this repo as a marketplace, install the plugin, and let hooks drive docko for you.
-[Use docko with Claude Code](docs/claude-code.md)
-
-**Repo-local install**
-Copy the same hooks, commands, and skill into your project instead of using the plugin.
-[Use docko with Claude Code](docs/claude-code.md)
-
-**CLI only**
-Run docko by hand, from a script, or from Codex through `AGENTS.md` guidance.
-[Quickstart](docs/quickstart.md)
+- **Claude Code plugin.** Add this repo as a marketplace, install the plugin, and let hooks drive
+  docko for you. [Use docko with Claude Code](docs/claude-code.md)
+- **Repo-local install.** Copy the same hooks, commands, and skill into your project instead of
+  using the plugin.
+  [Install into a project instead](docs/claude-code.md#install-into-a-project-instead)
+- **CLI only.** Run docko by hand or from a script with the [Quickstart](docs/quickstart.md), or
+  from Codex through
+  [Codex and other AGENTS.md runtimes](docs/agents-md-runtimes.md).
 
 ## How it works
 

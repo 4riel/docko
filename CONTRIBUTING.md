@@ -1,8 +1,8 @@
 # Contributing to docko
 
-Thanks for your interest in `docko-workspace`. This page covers the contribution policy: how to
-propose, format, and land a change. For local setup detail and the full ownership rules, read
-[Development](docs/development.md) and the documentation map in [`docs/INDEX.md`](docs/INDEX.md).
+This page covers the contribution policy for `docko-workspace`: how to propose, format, and land a
+change. For local setup detail and the full ownership rules, read
+[Development](docs/development.md) and the [documentation index](docs/INDEX.md).
 
 By participating, you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -41,8 +41,8 @@ Keep a change inside the narrowest owning surface:
   must not change who owns a claim or when a delegation is valid.
 - `packages/adapters/*` own runtime-specific hooks, templates, and settings. They stay thin and must
   not bypass core validation, persist parallel lock state, or redefine stale semantics.
-- `schemas/` are canonical. When a registry or session shape changes, update schemas, core, docs, and
-  tests together.
+- `schemas/` are canonical. When a registry or session shape changes, update schemas, core, docs,
+  and tests together.
 
 Treat `docko/registry.json` as canonical and `docko/registry.md` as generated output. When CLI
 behavior changes, update `docs/cli-reference.md` and any affected guide in the same change. Do not
@@ -75,5 +75,5 @@ narrowest-owning-surface rule, docs kept in sync, and no unimplemented behavior 
 ## Reporting issues
 
 Use the issue templates for bug reports and feature requests. For a security vulnerability, follow
-[SECURITY.md](SECURITY.md) and report it privately instead of opening a public issue. Every issue and
-pull request routes to the maintainer listed in `.github/CODEOWNERS`.
+the [Security policy](SECURITY.md) and report it privately instead of opening a public issue.
+Every issue and pull request routes to the maintainer listed in `.github/CODEOWNERS`.

@@ -6,7 +6,7 @@ launched agent needs to work inside your slot without taking the claim from you.
 ## Before you begin
 
 This guide assumes an owner session already holds a claim. See
-[quickstart](quickstart.md#step-3-claim-a-slot) or [application slot pools](applications.md) if you
+[Quickstart](quickstart.md#step-3-claim-a-slot) or [Application slot pools](applications.md) if you
 have not claimed a slot yet. Examples use `--root ./workspace` and explicit `--session` values so
 the owner and teammate roles stay clear; a Claude Code session usually omits both.
 
@@ -19,8 +19,8 @@ Not every teammate needs an explicit delegation:
 - A separately launched `claude` process, or any other runtime session started on its own, gets its
   own session id. It is not covered by the parent's claim and needs delegation before it can write.
 
-See [use docko with Claude Code](claude-code.md) for how the Claude Code adapter automates the first
-case.
+See [Use docko with Claude Code](claude-code.md) for how the Claude Code adapter automates the
+first case.
 
 ## Delegate a slot
 
@@ -94,6 +94,8 @@ See [what the hooks do](claude-code.md#what-the-hooks-do) for the full hook tabl
 
 ## Troubleshooting
 
+One symptom is specific to delegation.
+
 ### A delegated write is still denied
 
 Check these in order:
@@ -103,12 +105,12 @@ Check these in order:
    `docko status --root ./workspace --resource slot --id <slot-id>`.
 2. Confirm the scope is `write`, not `read`.
 3. Confirm the owner's claim is still active. A stale-recovered or released claim clears every
-   delegation on it, so the write is denied as `slot-not-claimed` or `claim-expired`, not
-   `unrelated-session`.
+   delegation on it, so the child's write is denied as `slot-not-claimed`, not `unrelated-session`.
+   Only the lapsed owner itself sees `claim-expired`.
 4. Confirm the writing session is the exact `child_session_id` that was delegated to, not a
    different session id from the same runtime.
 
-See [errors](errors.md#authorization-reasons) for the full authorization reason table.
+See [Errors](errors.md#authorization-reasons) for the full authorization reason table.
 
 ## Next steps
 

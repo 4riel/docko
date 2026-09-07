@@ -285,8 +285,9 @@ holds it, and the holder stamps `owner.json` inside it.
 | `acquired_at` | string | When the stamp was written, refreshed every 10 seconds. |
 
 Breaking an abandoned lock renames it to `docko/.registry.lock.stale-<random>` before deleting it.
-An interrupted write leaves a `.tmp` file or a `.docko-tmp-*` directory that the next docko process
-reclaims once it is older than five minutes.
+An interrupted write leaves a sibling `<name>.<hex>.tmp` file that the next docko process reclaims
+once it is older than five minutes. The same sweep also reclaims legacy `.docko-tmp-*` and
+quarantined `.registry.lock.stale-*` directories.
 
 ## Schemas
 

@@ -5,6 +5,9 @@ description: Runtime adapter guidance for the docko repository. Use when working
 
 # docko Adapters
 
+Rules for working on docko's runtime adapters. Use it before changing adapter packages, templates,
+or the plugin bundle.
+
 ## Read first
 
 - `docs/adapter-spec.md`
