@@ -826,9 +826,17 @@ test('ambiguous resolution requires explicit --session', async () => {
   assert.equal(claim.code, 3);
   assert.match(claim.stderr, /AMBIGUOUS_SESSION/);
   const error = JSON.parse(claim.stderr).error;
+  // Newest first: the caller almost always wants the session it just started.
   assert.deepEqual(
     error.active_sessions.map((session) => session.session_id),
-    ['ses_a', 'ses_b']
+    ['ses_b', 'ses_a']
+  );
+  assert.equal(error.active_session_count, 2);
+  assert.equal(error.newest_session_id, 'ses_b');
+  // The CLI adds the retry it would have run, with the newest session filled in.
+  assert.equal(
+    error.suggested_command,
+    'docko claim --root ' + root + ' --resource slot --id app-alpha --session ses_b'
   );
   assert.equal(error.active_sessions[0].runtime, 'shell');
   assert.equal(
@@ -1056,7 +1064,7 @@ test('delegated teammate inherits parent authority through Claude subagent start
   );
 
   assert.equal(auth.allow, true);
-  assert.equal(auth.reason, 'delegated-child');
+  assert.equal(auth.reason, 'delegated');
 });
 
 test('pre-tool-use recognizes absolute paths inside managed slots', async () => {
@@ -1073,7 +1081,7 @@ test('pre-tool-use recognizes absolute paths inside managed slots', async () => 
   );
 
   assert.equal(auth.allow, true);
-  assert.equal(auth.reason, 'owner-session');
+  assert.equal(auth.reason, 'owner');
 });
 
 test(
@@ -1092,7 +1100,7 @@ test(
     );
 
     assert.equal(auth.allow, true);
-    assert.equal(auth.reason, 'owner-session');
+    assert.equal(auth.reason, 'owner');
   }
 );
 
@@ -1265,7 +1273,7 @@ test('session prune previews quiet sessions before ending them', async () => {
 
   const preview = parseStdout(await runCli(['session', 'prune', '--root', root, '--dry-run']));
   assert.equal(preview.dry_run, true);
-  assert.equal(preview.max_age_ms, 24 * 60 * 60 * 1000);
+  assert.equal(preview.max_age_ms, 8 * 60 * 60 * 1000);
   assert.deepEqual(
     preview.pruned_sessions.map((session) => session.session_id),
     ['ghost']
@@ -1302,7 +1310,9 @@ test('session prune honors an explicit max age and reports briefly', async () =>
   assert.deepEqual(pruned, {
     dry_run: false,
     max_age_ms: 1,
+    retention_ms: 7 * 24 * 60 * 60 * 1000,
     pruned_session_count: 1,
+    deleted_manifests: 0,
     pruned_sessions: [
       {
         session_id: 'worker',
@@ -1682,8 +1692,10 @@ test('session end marks delegated children ended and preserves absolute workspac
   const activeSessions = parseStdout(await runCli(['session', 'list', '--root', root]));
   assert.deepEqual(activeSessions.active_sessions, []);
 
-  const leaderManifest = JSON.parse(await readFile(path.join(root, 'docko', 'sessions', 'leader.json'), 'utf8'));
-  const childManifest = JSON.parse(await readFile(path.join(root, 'docko', 'sessions', 'child.json'), 'utf8'));
+  // Ended manifests are moved out of the hot directory so the mutation path only reads live ones.
+  const endedDir = path.join(root, 'docko', 'sessions', 'ended');
+  const leaderManifest = JSON.parse(await readFile(path.join(endedDir, 'leader.json'), 'utf8'));
+  const childManifest = JSON.parse(await readFile(path.join(endedDir, 'child.json'), 'utf8'));
   assert.equal(path.isAbsolute(leaderManifest.workspace_root), true);
   assert.equal(path.isAbsolute(childManifest.workspace_root), true);
   assert.equal(typeof leaderManifest.ended_at, 'string');

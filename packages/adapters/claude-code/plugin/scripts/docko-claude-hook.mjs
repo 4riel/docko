@@ -135,6 +135,16 @@ function exportSessionEnv(env) {
   }
 }
 
+function formatDuration(milliseconds) {
+  const minutes = Math.round(milliseconds / 60000);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.round(minutes / 6) / 10;
+  return `${hours}h`;
+}
+
 function quoteArgument(value) {
   return /\s/.test(value) ? `"${value}"` : value;
 }
@@ -152,10 +162,14 @@ function buildDenyReason(cliOutput) {
 
   if (reason === 'claim-expired') {
     const expiredAt = typeof cliOutput.expired_at === 'string' ? ` at ${cliOutput.expired_at}` : '';
+    const quiet =
+      typeof cliOutput.claim_stale_after_ms === 'number'
+        ? ` (no heartbeat for ${formatDuration(cliOutput.claim_stale_after_ms)})`
+        : ' (no heartbeat before the stale window closed)';
     const branch = typeof cliOutput.owner_branch === 'string' ? cliOutput.owner_branch : '<branch>';
     const task = typeof cliOutput.owner_task === 'string' ? cliOutput.owner_task : '<task>';
     return (
-      `docko blocked this write: your claim on ${slotId} expired${expiredAt} (no heartbeat for long enough that the janitor reclaimed it). ` +
+      `docko blocked this write: your claim on ${slotId} expired${expiredAt}${quiet}. ` +
       `Re-claim it: docko claim ${rootArg}${sessionArg} --resource slot --id ${slotId} --branch ${branch} --task "${task}"`
     );
   }
@@ -163,8 +177,12 @@ function buildDenyReason(cliOutput) {
   if (reason === 'slot-not-claimed') {
     const application =
       typeof cliOutput.application_id === 'string' ? ` --application ${cliOutput.application_id}` : '';
+    const previousOwner =
+      typeof cliOutput.previous_owner_session_id === 'string'
+        ? ` It was last held by session ${cliOutput.previous_owner_session_id}.`
+        : '';
     return (
-      `docko blocked this write: ${slotId} is not claimed. ` +
+      `docko blocked this write: ${slotId} is not claimed.${previousOwner} ` +
       `Claim it first: docko slot acquire ${rootArg}${sessionArg}${application} --prefer ${slotId} --branch <branch> --task "<task>" --brief`
     );
   }

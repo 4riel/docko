@@ -147,10 +147,6 @@ interface OptionalResourceFlags {
   auto_acquire?: boolean;
 }
 
-// Session prune gained ended-manifest retention in core; keep the CLI forward-compatible
-// with builds that predate it instead of hard-failing on an unknown option.
-type SessionPruneRequest = SessionPruneOptions & { deleteEndedOlderThanMs?: number };
-
 const DEFAULT_SESSION_LIST_LIMIT = 20;
 // Ended session manifests are kept for a week so a post-mortem can still read them.
 const DEFAULT_ENDED_MANIFEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -376,7 +372,8 @@ Status options:
 
 Session prune options:
   --max-age-ms <n>    Quiet time after which a session is ended (default: workspace session stale timeout)
-  --delete-ended-older-than-ms <n>  Delete ended session manifests older than this (default: 7 days)
+  --retention-ms <n>  Delete ended session manifests older than this (default: 7 days)
+                      (alias: --delete-ended-older-than-ms)
   --dry-run           Report the sessions that would be ended without changing anything
 `;
   process.stdout.write(help);
@@ -513,9 +510,10 @@ Usage: docko session list [--limit <n>] [--brief]
 `,
   'session prune': `docko session prune — end sessions that have gone quiet
 
-Usage: docko session prune [--max-age-ms <n>] [--delete-ended-older-than-ms <n>] [--dry-run] [--brief]
+Usage: docko session prune [--max-age-ms <n>] [--retention-ms <n>] [--dry-run] [--brief]
 
---delete-ended-older-than-ms defaults to 7 days and reclaims ended session manifests from disk.
+--retention-ms (alias --delete-ended-older-than-ms) defaults to 7 days and deletes ended session
+manifests from docko/sessions/ended/. The result reports retention_ms and deleted_manifests.
 `,
   'adapter claude-code install': `docko adapter claude-code install — install repo-local Claude Code assets
 
@@ -1833,7 +1831,9 @@ function compactStatus(status: StatusResult | StatusPayload): Record<string, unk
     resources: resources.map(compactResource),
     janitor_released: status.janitor.released_claims.length,
     released_claims: status.janitor.released_claims.map(compactResource),
-    janitor_ended_sessions: status.janitor.ended_sessions.length
+    janitor_ended_sessions: status.janitor.ended_sessions.length,
+    janitor_ended_sessions_truncated: status.janitor.ended_sessions_truncated,
+    janitor_deleted_manifests: status.janitor.deleted_manifests
   };
 }
 
@@ -1887,16 +1887,13 @@ function compactSessionList(result: {
 }
 
 function compactSessionPrune(result: SessionPruneResult): Record<string, unknown> {
-  // `deleted_manifests` only exists on core builds that reclaim ended manifests; omit it
-  // rather than reporting a misleading zero on builds that do not.
-  const deletedManifests = (result as SessionPruneResult & { deleted_manifests?: unknown }).deleted_manifests;
-
   return {
     dry_run: result.dry_run,
     max_age_ms: result.max_age_ms,
+    retention_ms: result.retention_ms,
     pruned_session_count: result.pruned_session_count,
-    pruned_sessions: result.pruned_sessions.map(compactSession),
-    ...(deletedManifests === undefined ? {} : { deleted_manifests: deletedManifests })
+    deleted_manifests: result.deleted_manifests,
+    pruned_sessions: result.pruned_sessions.map(compactSession)
   };
 }
 
@@ -2863,13 +2860,7 @@ function serializeAuthorization(
   authorization: AuthorizationResult,
   workspaceRootPath: string
 ): Record<string, unknown> {
-  const detail = authorization as AuthorizationResult & {
-    owner_task?: string | null;
-    owner_branch?: string | null;
-    owner_session_active?: boolean | null;
-    expired_at?: string | null;
-    slot_path?: string | null;
-  };
+  const detail = authorization as AuthorizationResult & { slot_path?: string | null };
 
   return {
     allow: authorization.allowed,
@@ -2877,10 +2868,12 @@ function serializeAuthorization(
     session_id: authorization.session_id,
     resource_id: authorization.resource_id,
     owner_session_id: authorization.owner_session_id,
-    owner_task: detail.owner_task ?? null,
-    owner_branch: detail.owner_branch ?? null,
-    owner_session_active: detail.owner_session_active ?? null,
-    expired_at: detail.expired_at ?? null,
+    owner_task: authorization.owner_task ?? null,
+    owner_branch: authorization.owner_branch ?? null,
+    owner_session_active: authorization.owner_session_active ?? null,
+    expired_at: authorization.expired_at ?? null,
+    claim_stale_after_ms: authorization.claim_stale_after_ms ?? null,
+    previous_owner_session_id: authorization.previous_owner_session_id ?? null,
     slot_path: detail.slot_path ?? null,
     workspace_root: workspaceRootPath
   };
@@ -3178,10 +3171,11 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
     [
       'session prune',
       async () => {
-        const request: SessionPruneRequest = {
+        const request: SessionPruneOptions = {
           maxAgeMs: parsePositiveInt(option(context.options, 'max-age-ms'), 'max-age-ms'),
           dryRun: Boolean(context.options['dry-run']),
           deleteEndedOlderThanMs:
+            parsePositiveInt(option(context.options, 'retention-ms'), 'retention-ms') ??
             parsePositiveInt(option(context.options, 'delete-ended-older-than-ms'), 'delete-ended-older-than-ms') ??
             DEFAULT_ENDED_MANIFEST_RETENTION_MS
         };
