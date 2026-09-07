@@ -287,6 +287,12 @@ export class RegistryScribe {
     const slotDirs = await listDirectories(this.paths.slotsDir);
     const applicationIds = new Set((registry.applications ?? []).map((application) => application.application_id));
     const discoveredSlotIds = new Set<string>();
+    // Free slots are dropped and re-created below; their release history must survive that.
+    const lastClaims = new Map(
+      registry.resources
+        .filter((resource) => resource.resource_type === 'slot' && resource.last_claim)
+        .map((resource) => [resource.resource_id, resource.last_claim])
+    );
 
     registry.resources = registry.resources.filter((resource) => {
       if (resource.resource_type !== 'slot') {
@@ -306,21 +312,32 @@ export class RegistryScribe {
         for (const slotName of applicationSlots) {
           const resourceId = qualifySlotResourceId(slotId, slotName);
           discoveredSlotIds.add(resourceId);
-          this.upsertResource(registry, 'slot', resourceId, `slots/${slotId}/${slotName}`, {
+          const resource = this.upsertResource(registry, 'slot', resourceId, `slots/${slotId}/${slotName}`, {
             application_id: slotId,
             slot_name: slotName
           });
+          this.restoreLastClaim(resource, lastClaims);
         }
         continue;
       }
 
       discoveredSlotIds.add(slotId);
-      this.upsertResource(registry, 'slot', slotId, `slots/${slotId}`, {
+      const resource = this.upsertResource(registry, 'slot', slotId, `slots/${slotId}`, {
         application_id: null,
         slot_name: slotId
       });
+      this.restoreLastClaim(resource, lastClaims);
     }
     return registry;
+  }
+
+  private restoreLastClaim(
+    resource: RegistryResource,
+    lastClaims: ReadonlyMap<string, RegistryResource['last_claim']>
+  ): void {
+    if (!resource.last_claim && lastClaims.has(resource.resource_id)) {
+      resource.last_claim = lastClaims.get(resource.resource_id);
+    }
   }
 
   private validateRegistry(registry: RegistryDocument): void {
