@@ -13,7 +13,13 @@ CLI command: `docko`
 - Use `docko --version` for the package version.
 - All commands accept `--root <path>`. If omitted, docko uses `DOCKO_ROOT` or the current working directory.
 - Root resolution walks up like git: when the starting point (cwd, `--root`, or `DOCKO_ROOT`) sits inside a workspace but below its root, docko resolves up to the nearest ancestor that owns `docko/registry.json` instead of fragmenting state into a slot. `--root .` from inside a slot therefore works and reports the resolved root as `resolved_root`.
-- `init` is the exception: it scaffolds at the given location and refuses an explicit `--root` inside a managed `slots/` directory with `ROOT_INSIDE_SLOT`, so it can never leak a second registry into a slot.
+- Scaffolding commands are the exception: `init` and `adapter claude-code install` act on the directory they were pointed at and never resolve up.
+  - Both refuse a directory that sits inside another workspace's `slots/` tree with `ROOT_INSIDE_SLOT` (exit 1), whether or not `--root` was passed.
+  - `adapter claude-code install` additionally refuses a non-workspace directory inside another workspace with `ROOT_NOT_WORKSPACE` (exit 1), so it never scatters Claude Code assets into a parent project. Pass `--root <workspace_root>` explicitly to install there.
+  - `init` allows the second case: a nested workspace outside `slots/` is legitimate.
+  - Both errors report `provided_root` and `workspace_root`.
+- `--help` and `--version` are answered before any root resolution, so `docko init --root <slot> --help` prints usage rather than failing.
+- `docko slot --help`, `docko session --help`, and `docko adapter --help` print that namespace's subcommands; `docko <command> --help` prints that command's usage.
 - Session-aware commands also accept `--session <id>`. If omitted, docko tries `DOCKO_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID`, then auto-resolution from active sessions. An env id that matches no active session is ignored rather than failing.
 - When session resolution is ambiguous, the error carries `active_session_count`, the newest active sessions, `newest_session_id`, and `suggested_command`: the command you just ran, re-rendered with `--session` filled in.
 - Agent-facing commands can add `--brief` for a smaller JSON payload on `status`, `slot acquire`, `session list`, `session prune`, and `release`.
@@ -150,7 +156,7 @@ Options:
 
 Notes:
 
-- Successful output always includes the claimed slot, `resolved_root`, and availability counts from before the claim.
+- Successful output always includes the claimed slot, `resolved_root`, and availability counts from before the claim: `total_slots`, `free_slots_before` (slots rotation could take), `claimed_slots_before` (slots actually held by a session), and `pinned_slot_count`. A pinned slot is out of rotation, not busy, so it is never counted as claimed. `NO_FREE_SLOT` reports the same split as `busy_slot_count`, `pinned_slot_count`, and `pinned_slot_ids`.
 - Slots whose registry entry sets `auto_acquire: false` are skipped by automatic selection. They stay claimable by name with `docko claim` or `--prefer`.
 - When applications are configured, `docko` can infer the right application from keywords in `--task` or `--branch` text.
 - When docko creates a new clone, the payload includes `clone.size_bytes` and `clone.size_mb`.
@@ -302,7 +308,7 @@ Notes:
 
 - Slot resources are discovered from `slots/`; do not use `resource ensure` to create them.
 - Updating the path of a claimed resource is denied.
-- When `--no-auto-acquire`/`--auto-acquire` is passed, the payload reports the stored `auto_acquire` value (`auto_acquire_persisted` is `true` once the registry recorded it). The opt-out survives slot rediscovery; `true` is the default and is not written to the registry.
+- When `--no-auto-acquire`/`--auto-acquire` is passed, the payload always spells out the effective `auto_acquire` value. The opt-out survives slot rediscovery; `true` is the default and is not written to the registry.
 
 ## `docko render`
 
@@ -395,8 +401,8 @@ docko session prune --root ./workspace --retention-ms 86400000
 
 Options:
 
-- `--max-age-ms <n>` overrides `workspace.config.janitor.session_stale_after_ms` for this run only.
-- `--retention-ms <n>` deletes ended session manifests older than this window. Default: `604800000` (7 days). Alias: `--delete-ended-older-than-ms`.
+- `--max-age-ms <n>` overrides `workspace.config.janitor.session_stale_after_ms` for this run only. `0` means "now".
+- `--retention-ms <n>` deletes ended session manifests older than this window. Default: `604800000` (7 days). `0` means "now". Alias: `--delete-ended-older-than-ms`.
 - `--dry-run` reports what would be ended without writing anything.
 
 Notes:
@@ -405,6 +411,7 @@ Notes:
 - A session that still owns, or is delegated, a live claim is never ended.
 - Ending a session moves its manifest to `docko/sessions/ended/`, so the hot path only ever reads live sessions.
 - The result reports `retention_ms` and `deleted_manifests` alongside the ended sessions.
+- A non-dry run also drains every legacy ended manifest still sitting in `docko/sessions/` in one pass. The opportunistic janitor moves at most 100 per mutation, so a workspace with a large backlog only needs one `session prune`.
 
 ## `docko adapter claude-code install`
 
@@ -424,7 +431,9 @@ Options:
 Notes:
 
 - Use this when you want the adapter install without running full `init --claude`.
-- The hook launcher carries a `// docko-launcher-version:` header and is refreshed whenever the installed version differs from the shipped one, with or without `--force`. Commands, skills, and generated settings are still preserved unless `--force` is passed.
+- The install acts on `--root` exactly and never resolves up to an owning workspace. A directory inside another workspace's `slots/` tree fails with `ROOT_INSIDE_SLOT`; a non-workspace directory inside another workspace fails with `ROOT_NOT_WORKSPACE`. Both report `provided_root` and `workspace_root` and name the explicit `--root` to use instead.
+- Generated machine state — `<dest>/plugin.json`, `<dest>/hooks/hooks.json`, and `.claude/settings.docko.json` — is rewritten on every install so it always matches the installed docko version. It is reported under `written_files` only when its content actually changed.
+- The hook launcher carries a `// docko-launcher-version:` header and is refreshed whenever the installed version differs from the shipped one, with or without `--force`. Commands, skills, and template snippets are still preserved unless `--force` is passed.
 - Generated hook commands use the absolute launcher path, so hooks resolve from any working directory and any shell.
 - Re-installing an unchanged file reports it under `unchanged_files` rather than `written_files`.
 - Merging into `.claude/settings.local.json` replaces any previous docko registration for an event instead of appending a second one.
@@ -441,11 +450,12 @@ docko adapter claude-code doctor --root ./workspace --fix
 Options:
 
 - `--dest <path>` inspects a non-default plugin destination.
-- `--fix` removes docko hook registrations that point at a launcher which does not exist or is out of date.
+- `--fix` removes docko hook registrations that point at a launcher which does not exist or is out of date, and collapses duplicate registrations for an event down to the first healthy one. After fixing, the diagnosis is re-run, so `issues` and `ok` describe the install as it is now; `fixed` lists what changed.
 
 Reports:
 
 - `launcher`: installed path, version header, and whether it matches the shipped version.
+- `plugin_manifest`: the generated `<dest>/plugin.json`, its version, and whether it matches the installed docko version. Drift here means the install predates the docko on PATH; re-run `install`.
 - `settings_files`: docko hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, with duplicate and stale counts. Entries anchored on `${CLAUDE_PLUGIN_ROOT}` belong to the installed plugin and are left alone.
 - `docko_binary`: `DOCKO_BIN`, the resolved PATH entry, and the `npx` fallback used when neither is available.
 - `session`: `DOCKO_SESSION_ID` and `CLAUDE_CODE_SESSION_ID` as this shell sees them.

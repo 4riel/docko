@@ -163,15 +163,30 @@ Choose a directory path and retry.
 
 ### `ROOT_INSIDE_SLOT`
 
-`docko init` was given an explicit `--root` that resolves inside a managed `slots/` directory. It refuses rather than scaffolding a second registry inside a slot.
+A scaffolding command — `docko init` or `docko adapter claude-code install` — was pointed at a directory inside another workspace's managed `slots/` tree. It refuses rather than scaffolding a second registry, or a second Claude Code install, inside a slot.
+
+This fires whether or not `--root` was passed: a bare `docko init` run from inside a slot is the same mistake.
 
 The message names the absolute workspace root and the command to run instead; the payload also reports `provided_root` and `workspace_root`.
 
 ```text
 docko init --root "/abs/path/to/workspace"
+docko adapter claude-code install --root "/abs/path/to/workspace"
 ```
 
 Every other command resolves up instead of failing: `docko status --root .` from inside a slot works and reports the owning workspace as `resolved_root`.
+
+### `ROOT_NOT_WORKSPACE`
+
+`docko adapter claude-code install` was pointed at a directory that has no registry of its own but sits inside another workspace. Installing there would scatter `.claude-plugin/` and `.claude/` assets outside the workspace that owns them, so it refuses instead of silently installing into the ancestor.
+
+Exit code 1. The payload reports `provided_root` and `workspace_root`.
+
+```text
+docko adapter claude-code install --root "/abs/path/to/workspace"
+```
+
+`docko init` allows this case: a nested workspace outside `slots/` is legitimate, and init scaffolds one at the directory you named.
 
 ### `SOURCE_NOT_FOUND`
 
@@ -249,7 +264,9 @@ Exit code 1. Previously this surfaced as a raw `ENOENT` naming an internal lock 
 
 ### `--root .` from inside a slot
 
-This is no longer an error. docko walks up from the given root to the workspace that owns `docko/registry.json` and reports the result as `resolved_root`. `ROOT_INSIDE_SLOT` now only fires for `docko init` with an explicit `--root` inside a managed slot, where resolving up would silently create a second registry inside a slot. Its message names the absolute workspace root and the command to run instead.
+For read and write commands this is no longer an error. docko walks up from the given root to the workspace that owns `docko/registry.json` and reports the result as `resolved_root`.
+
+The scaffolding commands (`init` and `adapter claude-code install`) never walk up, because resolving up would silently write into a workspace the caller did not name. From inside a slot they fail with `ROOT_INSIDE_SLOT`; `install` from a non-workspace directory inside a workspace fails with `ROOT_NOT_WORKSPACE`. Both messages name the absolute workspace root and the command to run instead.
 
 ## Concurrency And Filesystem
 
@@ -260,8 +277,8 @@ Another docko process held `docko/.registry.lock/` for longer than the wait budg
 What to check:
 
 1. Is another docko command, hook, or poller running? Concurrent hooks on a busy workspace are the usual cause; retry with a short backoff instead of a fixed interval.
-2. Is the recorded owner pid still alive? A lock whose owner is gone is broken automatically by the next caller.
-3. If the owner is gone and the lock somehow survives, deleting `docko/.registry.lock/` is safe when no docko process is running.
+2. How old is the lock? Staleness is judged purely by age: a lock older than 30 seconds is treated as abandoned and broken automatically by the next caller. The recorded `pid` is diagnostic only — docko never probes it for liveness, so a live process that holds the lock for more than 30 seconds can have it broken, and a dead owner's lock is not broken any faster than an old live one.
+3. If the lock somehow survives, deleting `docko/.registry.lock/` is safe when no docko process is running. A `docko/.registry.lock.stale-*` directory is a lock docko quarantined while breaking it; it is deleted immediately and is only left behind by a process killed mid-break, after which the temp sweeper reclaims it.
 
 Pollers that call `docko status` on a timer should back off after repeated timeouts rather than retrying at the same rate.
 

@@ -80,7 +80,9 @@ That scaffolds:
 
 Those file paths are not just examples. They come from the current installer templates and generated output verified by `tests/claude-code-adapter.test.mjs`.
 
-`plugin.json` is generated, not copied: its `version` is stamped from the installed docko version on every install, so the bundle never drifts behind the package.
+`plugin.json`, `hooks/hooks.json`, and `.claude/settings.docko.json` are generated, not copied. They are docko's machine state, so every install rewrites them from the installed docko version and the current `--dest`; a file whose content did not change is reported under `unchanged_files` rather than `written_files`. The launcher is refreshed on version drift. Everything else — commands, the skill, and the snippets — is yours to edit and is preserved unless you pass `--force`.
+
+The install acts on the root you gave it and never resolves up to an owning workspace: a directory inside another workspace's `slots/` tree fails with `ROOT_INSIDE_SLOT`, and a non-workspace directory inside another workspace fails with `ROOT_NOT_WORKSPACE`.
 
 ## Add The Repo Rules
 
@@ -248,5 +250,5 @@ This repo does not currently ship a Docko Codex adapter package, Codex templates
 - The Node hook launcher prefers `docko` on `PATH` and falls back to `npx docko-workspace@alpha` when it is missing. For local testing, set `DOCKO_BIN` to an absolute executable path (on Windows a multi-token value like `node "C:\path\to\docko.js"` also works).
 - If you do not want automatic settings merging, install without `--write-settings-local` and merge `.claude/settings.docko.json` manually.
 - The repo-local `.claude-plugin/docko/` bundle is intentionally plain. It avoids hiding protocol logic behind opaque Claude-only behavior.
-- Run `docko adapter claude-code doctor` (or `/dock-doctor`) when hooks misbehave. It reports launcher version drift, duplicate or dangling hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, how `docko` resolves, and the session id this shell sees. `--fix` removes registrations that point at a launcher which is missing or out of date.
+- Run `docko adapter claude-code doctor` (or `/dock-doctor`) when hooks misbehave. It reports launcher and plugin manifest version drift, duplicate or dangling hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, how `docko` resolves, and the session id this shell sees. `--fix` removes registrations that point at a launcher which is missing or out of date, collapses duplicate registrations for an event down to the first healthy one, and re-runs the diagnosis so `issues` and `ok` describe the post-fix state.
 - The installed launcher carries a `// docko-launcher-version:` header. `docko adapter claude-code install` refreshes it whenever it differs from the shipped version, even without `--force`, because a stale launcher silently degrades every hook.

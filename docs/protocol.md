@@ -342,8 +342,14 @@ It refreshes:
 - the session manifest `updated_at`
 
 An authorized file write inside a claimed slot refreshes the same fields implicitly, so active
-work never goes stale while it is happening. That refresh is throttled: it rewrites state at most
-once every 30 seconds per claim, and leaves the registry untouched in between.
+work never goes stale while it is happening. That refresh is throttled, and the throttle scales
+with the claim's own stale window so a short window still gets several refreshes inside it:
+
+```text
+throttle = min(30_000, max(1_000, floor(claim.stale_after_ms / 4)))
+```
+
+Between refreshes the registry is left untouched.
 
 ### Release
 
@@ -483,12 +489,13 @@ The result carries enough context to explain itself:
 - `expired_at`: when the lapsed claim was released, for `claim-expired`
 - `claim_stale_after_ms`: the stale window of the current or last claim
 - `previous_owner_session_id`: who held the slot last, when it is currently free
+- `application_id` and `slot_path`: the slot's identity, so an adapter can render a usable retry command
 
 Cost model:
 
-- a path outside every managed slot is answered from an unlocked registry read: no lock, no session touch, no writes
-- a path inside a managed slot takes the normal locked path, where the answer depends on fresh claim state
-- an allowed write by the owner or a delegate refreshes the claim heartbeat, throttled to once per 30 seconds
+- a path outside the workspace's `slots/` tree is answered from an unlocked registry read: no lock, no session touch, no writes
+- a path anywhere under `slots/` takes the normal locked path, whether or not a resource exists for it yet: slot discovery runs there, so a directory created since the last mutation is answered as the unclaimed slot it is, not as an unmanaged path
+- an allowed write by the owner or a delegate refreshes the claim heartbeat, throttled to `min(30_000, max(1_000, floor(claim.stale_after_ms / 4)))` ms
 
 ## Status And Mirror Semantics
 
@@ -534,9 +541,10 @@ atomic `mkdir`.
 
 Rules:
 
-- the holder writes `owner.json` (`pid`, `hostname`, `acquired_at`) inside the lock directory
+- the holder writes `owner.json` (`pid`, `hostname`, `acquired_at`) inside the lock directory, then reads it back: only the process whose stamp survived holds the lock, so a directory removed between the `mkdir` and the stamp does not hand two processes the same lock
 - a waiter polls with jittered backoff (10 ms up to 100 ms) for up to 10 seconds
-- a lock older than 30 seconds is treated as abandoned and may be broken; recovery may be retried
+- a lock older than 30 seconds is treated as abandoned and may be broken. Staleness is judged purely by age (`owner.json`'s `acquired_at`, or the directory mtime when it is unreadable); the recorded pid is diagnostic only and is never probed for liveness
+- breaking a lock renames it to a unique `docko/.registry.lock.stale-<random>` and deletes that, so only the process that won the rename breaks it and no one deletes a lock a third process has already re-created
 - the holder releases the lock only while it still owns it, so a lock broken and re-acquired by another process is never deleted from underneath it
 - a locked operation on a root with no `docko/` directory fails with `WORKSPACE_NOT_INITIALIZED`, not a raw filesystem error
 
@@ -544,7 +552,8 @@ Every registry and manifest write is atomic: content is written to a sibling tem
 over the target. A rename that fails for a transient reason (`EPERM`, `EBUSY`, `EACCES`,
 `ENOTEMPTY` — typical of Windows file scanners and concurrent readers) is retried with backoff, and
 exhausting the budget raises `ATOMIC_WRITE_FAILED`. Temp artifacts left behind by killed processes
-are swept once per process on the registry write path.
+are swept once per process, on both the registry read and write paths, across `docko/`,
+`docko/sessions/`, and `docko/sessions/ended/`.
 
 ## Runtime-Neutral CLI Contract
 
@@ -601,6 +610,7 @@ Representative error codes include:
 - `RESOURCE_OWNED_BY_OTHER_SESSION`
 - `RESOURCE_MUTATION_DENIED`
 - `ROOT_INSIDE_SLOT`
+- `ROOT_NOT_WORKSPACE`
 - `CORRUPTED_REGISTRY`
 - `WORKSPACE_NOT_INITIALIZED`
 - `REGISTRY_LOCK_TIMEOUT`
