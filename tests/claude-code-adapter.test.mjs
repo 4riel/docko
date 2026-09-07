@@ -350,3 +350,186 @@ test('Claude adapter install rethrows unexpected filesystem errors from managed 
     /EISDIR|illegal operation on a directory/i
   );
 });
+
+test('install refreshes an outdated hook launcher without --force', async () => {
+  const { installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  const launcher = path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs');
+  const shipped = await readFile(launcher, 'utf8');
+
+  // An install left behind by an older release: same file, older version header.
+  await writeFile(
+    launcher,
+    shipped.replace(/^\/\/ docko-launcher-version: .*$/m, '// docko-launcher-version: 0.0.1'),
+    'utf8'
+  );
+  const refreshed = await installClaudeCodeAdapter({ workspaceRoot: root });
+  assert.ok(refreshed.written_files.includes(launcher));
+  assert.equal(await readFile(launcher, 'utf8'), shipped);
+
+  // A local edit that keeps the current version is a user change and is preserved.
+  const edited = `${shipped}\n// local tweak\n`;
+  await writeFile(launcher, edited, 'utf8');
+  const preserved = await installClaudeCodeAdapter({ workspaceRoot: root });
+  assert.ok(preserved.skipped_files.includes(launcher));
+  assert.equal(await readFile(launcher, 'utf8'), edited);
+
+  // --force still restores it.
+  const forced = await installClaudeCodeAdapter({ workspaceRoot: root, force: true });
+  assert.ok(forced.written_files.includes(launcher));
+  assert.equal(await readFile(launcher, 'utf8'), shipped);
+
+  // A second identical install reports files as unchanged rather than written.
+  const again = await installClaudeCodeAdapter({ workspaceRoot: root });
+  assert.ok(again.unchanged_files.includes(launcher));
+  assert.equal(again.written_files.includes(launcher), false);
+  assert.equal(again.launcher_version.length > 0, true);
+});
+
+test('install anchors hook commands on a custom destination and never duplicates a registration', async () => {
+  const { installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+
+  const result = await installClaudeCodeAdapter({
+    workspaceRoot: root,
+    destination: path.join('tools', 'docko'),
+    writeSettingsLocal: true
+  });
+
+  const expectedLauncher = path.join(root, 'tools', 'docko', 'scripts', 'docko-claude-hook.mjs');
+  assert.equal(
+    result.settings_fragment.hooks.SessionStart[0].hooks[0].command,
+    `node "${expectedLauncher}" session-start`
+  );
+
+  // Re-installing must replace the docko entry, not append a second one.
+  await installClaudeCodeAdapter({
+    workspaceRoot: root,
+    destination: path.join('tools', 'docko'),
+    writeSettingsLocal: true
+  });
+  const settings = JSON.parse(await readFile(path.join(root, '.claude', 'settings.local.json'), 'utf8'));
+  assert.equal(settings.hooks.SessionStart.length, 1);
+  assert.equal(settings.hooks.PreToolUse.length, 1);
+});
+
+test('doctor reports a healthy install and diagnoses a stale duplicate registration', async () => {
+  const { doctorClaudeCodeAdapter, installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root, writeSettingsLocal: true });
+
+  const healthy = await doctorClaudeCodeAdapter({
+    workspaceRoot: root,
+    sessionEnv: { DOCKO_BIN: 'docko', DOCKO_SESSION_ID: 'ses_x' }
+  });
+  assert.equal(healthy.ok, true);
+  assert.equal(healthy.launcher.exists, true);
+  assert.equal(healthy.launcher.up_to_date, true);
+  assert.equal(healthy.session.resolved_session_id, 'ses_x');
+  assert.equal(healthy.docko_binary.docko_bin_env, 'docko');
+
+  // A leftover registration from a previous layout: the launcher it names is gone.
+  const settingsPath = path.join(root, '.claude', 'settings.json');
+  await writeFile(
+    settingsPath,
+    `${JSON.stringify(
+      {
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [{ type: 'command', command: 'node "old/docko-claude-hook.mjs" session-start', timeout: 10 }]
+            },
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: `node "${path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs')}" session-start`,
+                  timeout: 60
+                }
+              ]
+            }
+          ],
+          Notification: [{ hooks: [{ type: 'command', command: 'echo hi', timeout: 1 }] }]
+        }
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+
+  const diagnosed = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { DOCKO_BIN: 'docko' } });
+  assert.equal(diagnosed.ok, false);
+  assert.equal(
+    diagnosed.issues.some((issue) => issue.code === 'HOOK_LAUNCHER_MISSING'),
+    true
+  );
+  assert.equal(
+    diagnosed.issues.some((issue) => issue.code === 'DUPLICATE_HOOK_REGISTRATION'),
+    true
+  );
+  // Nothing is written without --fix.
+  const untouched = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(untouched.hooks.SessionStart.length, 2);
+
+  const fixed = await doctorClaudeCodeAdapter({
+    workspaceRoot: root,
+    fix: true,
+    sessionEnv: { DOCKO_BIN: 'docko' }
+  });
+  assert.equal(fixed.fixed.length, 1);
+  const repaired = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(repaired.hooks.SessionStart.length, 1);
+  assert.match(repaired.hooks.SessionStart[0].hooks[0].command, /\.claude-plugin/);
+  // Unrelated hooks are left alone.
+  assert.equal(repaired.hooks.Notification.length, 1);
+});
+
+test('doctor flags a missing launcher, version drift, and an unresolvable binary', async () => {
+  const { doctorClaudeCodeAdapter, installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+
+  const missing = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { PATH: '' } });
+  assert.equal(
+    missing.issues.some((issue) => issue.code === 'LAUNCHER_MISSING'),
+    true
+  );
+  assert.equal(
+    missing.issues.some((issue) => issue.code === 'DOCKO_BINARY_NOT_RESOLVED'),
+    true
+  );
+  assert.equal(
+    missing.issues.some((issue) => issue.code === 'SESSION_ID_NOT_EXPORTED'),
+    true
+  );
+  assert.match(missing.docko_binary.fallback, /npx/);
+
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+  const launcher = path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs');
+  const shipped = await readFile(launcher, 'utf8');
+  await writeFile(
+    launcher,
+    shipped.replace(/^\/\/ docko-launcher-version: .*$/m, '// docko-launcher-version: 0.0.1'),
+    'utf8'
+  );
+
+  const drifted = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { DOCKO_BIN: 'docko' } });
+  assert.equal(drifted.launcher.version, '0.0.1');
+  assert.equal(drifted.launcher.up_to_date, false);
+  const issue = drifted.issues.find((entry) => entry.code === 'LAUNCHER_OUTDATED');
+  assert.ok(issue);
+  assert.match(issue.message, /docko adapter claude-code install/);
+});
+
+test('doctor is reachable from the CLI', async () => {
+  const root = await makeWorkspace();
+  await runCli(['init', '--root', root]);
+  await runCli(['adapter', 'claude-code', 'install', '--root', root, '--write-settings-local']);
+
+  const report = parseStdout(await runCli(['adapter', 'claude-code', 'doctor', '--root', root]));
+  assert.equal(report.workspace_root, root);
+  assert.equal(report.launcher.up_to_date, true);
+  assert.equal(Array.isArray(report.issues), true);
+});

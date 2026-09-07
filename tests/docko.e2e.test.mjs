@@ -1732,3 +1732,255 @@ test('logs returns recent entries in newest-first order and respects the limit',
     ['heartbeat', 'claim']
   );
 });
+
+test('the runtime session id resolves a bare command through CLAUDE_CODE_SESSION_ID', async () => {
+  const root = await makeWorkspace('docko-env-session-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'claude-code', '--session', 'ses_env']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_other']);
+
+  // Two active sessions: without the env id this is AMBIGUOUS_SESSION.
+  const claimed = parseStdout(
+    await runCli(['claim', '--root', root, '--resource', 'slot', '--id', 'app-alpha'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'ses_env' }
+    })
+  );
+  assert.equal(claimed.claim.owner_session_id, 'ses_env');
+
+  // DOCKO_SESSION_ID still wins when both are set.
+  const status = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], {
+      env: { DOCKO_SESSION_ID: 'ses_other', CLAUDE_CODE_SESSION_ID: 'ses_env' }
+    })
+  );
+  assert.equal(status.summary.session_id, 'ses_other');
+  assert.deepEqual(status.summary.my_claims, []);
+});
+
+test('status --claimed and the summary block replace hand-rolled filtering', async () => {
+  const root = await makeWorkspace('docko-status-summary-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli([
+    'claim',
+    '--root',
+    root,
+    '--session',
+    'ses_owner',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--branch',
+    'feat/x',
+    '--task',
+    'do the thing'
+  ]);
+
+  const claimedOnly = parseStdout(
+    await runCli(['status', '--root', root, '--brief', '--claimed', '--session', 'ses_owner'])
+  );
+  assert.deepEqual(
+    claimedOnly.resources.map((resource) => resource.id),
+    ['app-alpha']
+  );
+  // The summary still describes the whole workspace, not the filtered view.
+  assert.deepEqual(claimedOnly.summary.slots, { total: 2, free: 1, claimed: 1 });
+  assert.deepEqual(claimedOnly.summary.my_claims, ['app-alpha']);
+  assert.equal(claimedOnly.resolved_root, root);
+  assert.equal(claimedOnly.summary.stale_candidates.length, 0);
+
+  const full = parseStdout(await runCli(['status', '--root', root, '--session', 'ses_owner']));
+  assert.equal(full.resolved_root, root);
+  assert.deepEqual(full.summary.my_claims, ['app-alpha']);
+  assert.equal(full.resources.length, 2);
+});
+
+test('session list returns the newest sessions and reports the full count', async () => {
+  const root = await makeWorkspace('docko-session-limit-');
+  await runCli(['init', '--root', root]);
+  for (const id of ['ses_1', 'ses_2', 'ses_3']) {
+    await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', id]);
+  }
+
+  const limited = parseStdout(await runCli(['session', 'list', '--root', root, '--brief', '--limit', '2']));
+  assert.equal(limited.active_session_count, 3);
+  assert.equal(limited.returned_session_count, 2);
+  assert.equal(limited.limit, 2);
+  assert.equal(limited.active_sessions.length, 2);
+  // Newest first, so the last session started leads.
+  assert.equal(limited.active_sessions[0].session_id, 'ses_3');
+});
+
+test('slot acquire prefers a named slot and skips pinned ones', async () => {
+  const root = await makeWorkspace('docko-acquire-prefer-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_a']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_b']);
+
+  // Round-robin would pick app-alpha; --prefer takes the named free slot instead.
+  const preferred = parseStdout(
+    await runCli([
+      'slot',
+      'acquire',
+      '--root',
+      root,
+      '--session',
+      'ses_a',
+      '--prefer',
+      'app-beta',
+      '--branch',
+      'feat/prefer',
+      '--task',
+      'take app-beta',
+      '--brief'
+    ])
+  );
+  assert.equal(preferred.slot_id, 'app-beta');
+
+  // A busy preference falls back to round-robin instead of failing.
+  const fallback = parseStdout(
+    await runCli([
+      'slot',
+      'acquire',
+      '--root',
+      root,
+      '--session',
+      'ses_b',
+      '--prefer',
+      'app-beta',
+      '--branch',
+      'feat/fallback',
+      '--task',
+      'fall back',
+      '--brief'
+    ])
+  );
+  assert.equal(fallback.slot_id, 'app-alpha');
+
+  const unknown = await runCli([
+    'slot',
+    'acquire',
+    '--root',
+    root,
+    '--session',
+    'ses_a',
+    '--prefer',
+    'nope',
+    '--branch',
+    'feat/none',
+    '--task',
+    'missing slot'
+  ]);
+  assert.equal(unknown.code, 1);
+  const error = JSON.parse(unknown.stderr).error;
+  assert.equal(error.code, 'PREFERRED_SLOT_NOT_FOUND');
+  assert.deepEqual(error.known_slot_ids, ['app-alpha', 'app-beta']);
+});
+
+test('release explains a free resource and records a forced takeover', async () => {
+  const root = await makeWorkspace('docko-release-errors-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_owner']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_other']);
+
+  // Releasing something already free must say so, including under --brief.
+  const free = await runCli([
+    'release',
+    '--root',
+    root,
+    '--session',
+    'ses_owner',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha',
+    '--brief'
+  ]);
+  assert.equal(free.code, 1);
+  const freeError = JSON.parse(free.stderr).error;
+  assert.equal(freeError.code, 'RESOURCE_NOT_CLAIMED');
+  assert.match(freeError.message, /app-alpha is not claimed/);
+
+  await runCli(['claim', '--root', root, '--session', 'ses_owner', '--resource', 'slot', '--id', 'app-alpha']);
+
+  const nonOwner = await runCli([
+    'release',
+    '--root',
+    root,
+    '--session',
+    'ses_other',
+    '--resource',
+    'slot',
+    '--id',
+    'app-alpha'
+  ]);
+  assert.equal(nonOwner.code, 2);
+  const nonOwnerError = JSON.parse(nonOwner.stderr).error;
+  assert.equal(nonOwnerError.code, 'RESOURCE_OWNED_BY_OTHER_SESSION');
+  assert.match(nonOwnerError.suggested_command, /--force/);
+
+  const forced = parseStdout(
+    await runCli([
+      'release',
+      '--root',
+      root,
+      '--session',
+      'ses_other',
+      '--resource',
+      'slot',
+      '--id',
+      'app-alpha',
+      '--force',
+      '--brief'
+    ])
+  );
+  assert.equal(forced.released, true);
+  assert.equal(forced.forced_by_session_id, 'ses_other');
+  assert.equal(forced.previous_owner_session_id, 'ses_owner');
+  assert.equal(forced.release_reason, 'force-release');
+
+  // The takeover is recorded, so an operator can see who forced the release and when.
+  const logs = parseStdout(await runCli(['logs', '--root', root, '--limit', '50']));
+  assert.equal(
+    logs.entries.some(
+      (entry) =>
+        entry.operation === 'release' &&
+        entry.session_id === 'ses_other' &&
+        entry.details?.release_reason === 'force-release' &&
+        entry.details?.previous_owner_session_id === 'ses_owner'
+    ),
+    true
+  );
+});
+
+test('session prune deletes ended manifests past the retention window', async () => {
+  const root = await makeWorkspace('docko-prune-retention-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ghost']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ghost']);
+
+  const endedManifest = path.join(root, 'docko', 'sessions', 'ended', 'ghost.json');
+  assert.equal(existsSync(endedManifest), true);
+
+  // A one-millisecond retention window reclaims it on the next prune.
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--retention-ms', '1', '--brief']));
+  assert.equal(pruned.retention_ms, 1);
+  assert.equal(pruned.deleted_manifests >= 1, true);
+  assert.equal(existsSync(endedManifest), false);
+});
+
+test('per-command help documents the command that was asked about', async () => {
+  const acquire = await runCli(['slot', 'acquire', '--help']);
+  assert.equal(acquire.code, 0);
+  assert.match(acquire.stdout, /docko slot acquire — claim a slot chosen by docko/);
+  assert.match(acquire.stdout, /--prefer <slot-id>/);
+
+  const release = await runCli(['release', '--help']);
+  assert.equal(release.code, 0);
+  assert.match(release.stdout, /RESOURCE_NOT_CLAIMED/);
+
+  const generic = await runCli(['--help']);
+  assert.equal(generic.code, 0);
+  assert.match(generic.stdout, /Run "docko <command> --help"/);
+});

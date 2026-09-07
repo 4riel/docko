@@ -19,6 +19,12 @@ import {
 
 const test = (name, fn) => nodeTest(name, { concurrency: false }, fn);
 
+async function loadDockoError() {
+  await ensureBuiltArtifacts();
+  const core = await import(pathToFileURL(path.join(repoRoot, 'packages', 'core', 'dist', 'index.js')).href);
+  return core.DockoError;
+}
+
 async function loadCliInternals() {
   await ensureBuiltArtifacts();
   const module = await import(pathToFileURL(cliPath).href);
@@ -1737,4 +1743,208 @@ test('CLI direct commands cover prompt cancellation, explicit guide files, paylo
   await mkdir(path.join(installCollisionRoot, '.claude-plugin', 'docko', 'plugin.json'), { recursive: true });
   const collision = await runCli(['adapter', 'claude-code', 'install', '--root', installCollisionRoot]);
   assert.equal(collision.code, 1);
+});
+
+test('CLI renders a copy-pastable retry for an ambiguous session', async () => {
+  const cli = await loadCliInternals();
+  const DockoError = await loadDockoError();
+
+  // The env session wins when the runtime set one; otherwise the newest active session does.
+  assert.equal(
+    cli.buildSuggestedCommand(['claim', '--root', '/w', '--resource', 'slot', '--id', 'main'], 'ses_new'),
+    'docko claim --root /w --resource slot --id main --session ses_new'
+  );
+  // An existing --session is replaced, not duplicated.
+  assert.equal(
+    cli.buildSuggestedCommand(['status', '--session', 'ses_old', '--brief'], 'ses_new'),
+    'docko status --brief --session ses_new'
+  );
+  // Values with spaces stay quoted so the line can be pasted as-is.
+  assert.equal(
+    cli.buildSuggestedCommand(['claim', '--task', 'ship it'], 'ses_new'),
+    'docko claim --task "ship it" --session ses_new'
+  );
+
+  const ambiguous = new DockoError('Multiple active sessions found.', 'AMBIGUOUS_SESSION', 3, {
+    active_session_count: 2,
+    newest_session_id: 'ses_newest',
+    active_sessions: [{ session_id: 'ses_newest' }, { session_id: 'ses_older' }]
+  });
+
+  const fromNewest = cli.withSessionRecovery(
+    { argv: ['claim', '--resource', 'slot', '--id', 'main'], sessionEnv: null },
+    ambiguous
+  );
+  assert.equal(fromNewest.details.suggested_command, 'docko claim --resource slot --id main --session ses_newest');
+
+  const fromEnv = cli.withSessionRecovery(
+    { argv: ['claim', '--resource', 'slot', '--id', 'main'], sessionEnv: 'ses_env' },
+    ambiguous
+  );
+  assert.equal(fromEnv.details.suggested_command, 'docko claim --resource slot --id main --session ses_env');
+
+  // Any other error passes through untouched.
+  const other = new DockoError('nope', 'NO_ACTIVE_SESSION', 4);
+  assert.equal(cli.withSessionRecovery({ argv: [], sessionEnv: null }, other), other);
+});
+
+test('CLI status summary answers the questions agents ask by hand', async () => {
+  const cli = await loadCliInternals();
+  const now = Date.parse('2026-09-07T12:00:00.000Z');
+  const status = {
+    schema_version: '0.1.0',
+    workspace: { workspace_id: 'wk', workspace_root: '/w', name: 'w' },
+    applications: [{ application_id: 'backend', name: 'Backend' }],
+    resources: [
+      {
+        resource_type: 'slot',
+        resource_id: 'backend.a',
+        application_id: 'backend',
+        status: 'claimed',
+        claim: {
+          owner_session_id: 'ses_me',
+          stale_after_ms: 3_600_000,
+          heartbeat_at: '2026-09-07T11:00:00.000Z',
+          updated_at: '2026-09-07T11:00:00.000Z',
+          claimed_at: '2026-09-07T10:00:00.000Z'
+        }
+      },
+      {
+        resource_type: 'slot',
+        resource_id: 'backend.b',
+        application_id: 'backend',
+        status: 'claimed',
+        claim: {
+          owner_session_id: 'ses_other',
+          stale_after_ms: 3_600_000,
+          heartbeat_at: '2026-09-07T11:59:00.000Z',
+          updated_at: '2026-09-07T11:59:00.000Z',
+          claimed_at: '2026-09-07T11:00:00.000Z'
+        },
+        delegations: [{ child_session_id: 'ses_me', scope: 'write' }]
+      },
+      { resource_type: 'slot', resource_id: 'backend.c', application_id: 'backend', status: 'free' }
+    ],
+    janitor: { released_claims: [], ended_sessions: [], ended_sessions_truncated: false, deleted_manifests: 0 }
+  };
+
+  const summary = cli.buildStatusSummary(status, '/w', 'ses_me', now);
+  assert.deepEqual(summary.slots, { total: 3, free: 1, claimed: 2 });
+  assert.deepEqual(summary.applications, [{ application_id: 'backend', slots: { total: 3, free: 1, claimed: 2 } }]);
+  // Owned claims and delegated ones both count as mine.
+  assert.deepEqual(summary.my_claims, ['backend.a', 'backend.b']);
+  // Only the claim quiet for more than half its stale window is a candidate.
+  assert.deepEqual(
+    summary.stale_candidates.map((candidate) => candidate.resource_id),
+    ['backend.a']
+  );
+  assert.equal(summary.stale_candidates[0].last_heartbeat_at, '2026-09-07T11:00:00.000Z');
+  assert.equal(summary.stale_candidates[0].age_ms, 3_600_000);
+
+  const anonymous = cli.buildStatusSummary(status, '/w', null, now);
+  assert.deepEqual(anonymous.my_claims, []);
+});
+
+test('CLI slot selection honors pinned slots and --prefer', async () => {
+  const cli = await loadCliInternals();
+  const slots = [
+    { resource_id: 'a', status: 'free' },
+    { resource_id: 'libs', status: 'free', auto_acquire: false },
+    { resource_id: 'b', status: 'claimed' }
+  ];
+
+  assert.equal(cli.isAutoAcquireDisabled(slots[0]), false);
+  assert.equal(cli.isAutoAcquireDisabled(slots[1]), true);
+
+  assert.equal(cli.resolvePreferredSlot(slots, null, null), null);
+  assert.equal(cli.resolvePreferredSlot(slots, 'libs', null).resource_id, 'libs');
+  assert.throws(
+    () => cli.resolvePreferredSlot(slots, 'missing', 'backend'),
+    (error) => error.code === 'PREFERRED_SLOT_NOT_FOUND' && error.message.includes('backend')
+  );
+});
+
+test('CLI compacts a release and enriches its failures', async () => {
+  const cli = await loadCliInternals();
+  const DockoError = await loadDockoError();
+
+  assert.deepEqual(
+    cli.compactRelease({
+      resource_type: 'slot',
+      resource_id: 'main',
+      released_by_session_id: 'ses_b',
+      previous_owner_session_id: 'ses_a',
+      forced_by_session_id: 'ses_b',
+      claim: { release_reason: 'force-release' }
+    }),
+    {
+      ok: true,
+      released: true,
+      resource_type: 'slot',
+      resource_id: 'main',
+      released_by_session_id: 'ses_b',
+      previous_owner_session_id: 'ses_a',
+      forced_by_session_id: 'ses_b',
+      release_reason: 'force-release'
+    }
+  );
+
+  const context = { root: '/w', argv: ['release', '--resource', 'slot', '--id', 'main'] };
+  const notClaimed = cli.withReleaseRecovery(
+    context,
+    'ses_a',
+    'main',
+    new DockoError('Resource is not claimed.', 'RESOURCE_NOT_CLAIMED', 1, { resource_id: 'main' })
+  );
+  assert.match(notClaimed.message, /main is not claimed/);
+  assert.match(notClaimed.details.next_steps[0], /--brief --claimed/);
+
+  const otherOwner = cli.withReleaseRecovery(
+    context,
+    'ses_b',
+    'main',
+    new DockoError('Resource is owned by another session.', 'RESOURCE_OWNED_BY_OTHER_SESSION', 2, {
+      owner_session_id: 'ses_a'
+    })
+  );
+  assert.match(otherOwner.message, /take it over with --force/);
+  assert.match(otherOwner.details.suggested_command, /--force --session ses_b$/);
+});
+
+test('CLI prints per-command help and falls back to the command list', async () => {
+  const cli = await loadCliInternals();
+  let stdout = '';
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => {
+    stdout += String(chunk);
+    return true;
+  };
+
+  try {
+    cli.printCommandHelp(['slot', 'acquire']);
+    assert.match(stdout, /docko slot acquire — claim a slot chosen by docko/);
+    assert.match(stdout, /--prefer <slot-id>/);
+
+    stdout = '';
+    // A three-word command resolves to its own page, not the adapter prefix.
+    cli.printCommandHelp(['adapter', 'claude-code', 'doctor']);
+    assert.match(stdout, /docko adapter claude-code doctor/);
+
+    stdout = '';
+    cli.printCommandHelp(['nonsense']);
+    assert.match(stdout, /runtime-agnostic workspace docking/);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+});
+
+test('CLI SessionStart context carries the session id, the root, and runnable commands', async () => {
+  const cli = await loadCliInternals();
+  const context = cli.buildSessionStartContext('ses_x', '/w');
+
+  assert.match(context, /Your docko session id is ses_x and this workspace root is \/w\./);
+  assert.match(context, /never invent a session id/);
+  assert.match(context, /docko slot acquire --root "\/w" --session ses_x --branch <branch> --task "<task>" --brief/);
+  assert.match(context, /docko claim --root "\/w" --session ses_x --resource slot --id <slot>/);
+  assert.match(context, /docko release --root "\/w" --session ses_x --resource slot --id <slot>/);
 });
