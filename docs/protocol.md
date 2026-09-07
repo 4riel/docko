@@ -34,9 +34,13 @@ workspace/
     |-- registry.json
     |-- registry.md
     |-- .registry.lock/
+    |   `-- owner.json
     |-- sessions/
     |   |-- <session-id>.json
-    |   `-- ...
+    |   |-- ...
+    |   `-- ended/
+    |       |-- <session-id>.json
+    |       `-- ...
     `-- logs/
         |-- YYYY-MM-DD.jsonl
         `-- ...
@@ -45,10 +49,12 @@ workspace/
 ## Canonical Persistence Surfaces
 
 - `docko/registry.json`: canonical registry for workspace metadata, resources, claims, and delegations
-- `docko/registry.md`: generated human mirror of the registry; never authoritative
-- `docko/sessions/*.json`: one manifest per session; sessions are not embedded in `registry.json`
+- `docko/registry.md`: generated human mirror of the registry; best-effort output, never authoritative
+- `docko/sessions/*.json`: one manifest per active session; sessions are not embedded in `registry.json`
+- `docko/sessions/ended/*.json`: manifests of sessions that have ended, kept for the retention window
 - `docko/logs/*.jsonl`: best-effort debug trail for recent operations
 - `docko/.registry.lock/`: filesystem lock directory used to serialize registry mutations
+- `docko/.registry.lock/owner.json`: `{ pid, hostname, acquired_at }` of the process holding the lock
 
 ## Core Entities
 
@@ -112,7 +118,7 @@ The registry tracks workspace-level state only. It does not inline session manif
     "config": {
       "janitor": {
         "slot_stale_after_ms": 14400000,
-        "session_stale_after_ms": 86400000
+        "session_stale_after_ms": 28800000
       },
       "scheduler": {
         "last_slot_id": {
@@ -148,6 +154,14 @@ The registry tracks workspace-level state only. It does not inline session manif
         "heartbeat_at": "2026-03-21T08:15:11.000Z",
         "stale_after_ms": 14400000,
         "release_reason": null
+      },
+      "last_claim": {
+        "owner_session_id": "ses_previous",
+        "released_at": "2026-03-21T08:11:00.000Z",
+        "reason": "stale-recovery",
+        "branch": "feat/previous",
+        "task": "previous task",
+        "stale_after_ms": 14400000
       },
       "delegations": [
         {
@@ -238,12 +252,23 @@ Rules:
 Commands that need a session resolve it in this order:
 
 1. explicit `--session`
-2. `DOCKO_SESSION_ID` from the environment
+2. the environment session id (`DOCKO_SESSION_ID`), but only when it names an active session
 3. the only active session in `docko/sessions/`
 
-If none exist, the command fails with `NO_ACTIVE_SESSION`.
-If more than one active session exists and neither `--session` nor `DOCKO_SESSION_ID` is set, the command fails with `AMBIGUOUS_SESSION`.
-The error payload includes compact active session candidates and safe next steps so agents can retry with an explicit `--session <id>` without ending unrelated sessions.
+An environment id that matches no active session is ignored rather than fatal: a runtime that
+exports a session id docko never saw still resolves through single-active resolution.
+
+If no active session exists, the command fails with `NO_ACTIVE_SESSION`.
+If more than one active session exists and neither an explicit nor a matching environment id is
+available, the command fails with `AMBIGUOUS_SESSION`.
+
+The `AMBIGUOUS_SESSION` payload carries:
+
+- `active_session_count`: how many sessions are active
+- `active_sessions`: the 10 most recently updated candidates, newest first
+- `newest_session_id`: the newest interactive candidate, for a copy-pastable `--session <id>`
+- `next_steps`: safe recovery steps that never suggest ending unrelated sessions
+- `resolution`: the explicit and environment ids that were considered
 
 ### Current And List
 
@@ -259,17 +284,24 @@ Rules:
 - it releases every claim owned by that session
 - it ends any delegated child sessions whose `parent_session_id` or `delegated_from_session_id` matches the ending session
 - if the manifest file exists, it marks the manifest with `ended_at` and updates `updated_at`
-- it does not remove the manifest file by default
+- it moves the manifest to `docko/sessions/ended/`, so the hot directory only holds live sessions
+- it does not delete the manifest
+
+Ended manifests are read back by `session current` and by any lookup of a specific session id.
+They are removed only by the retention sweep described in [Prune](#prune).
 
 ### Prune
 
-`docko session prune` is the recovery path for sessions that never ran `session end`.
+`docko session prune` is the recovery path for sessions that never ran `session end`, and the
+reclaim path for ended manifests on disk.
 
 Rules:
 
 - it applies the same session janitor pass described in [Stale Recovery](#stale-recovery)
 - `--max-age-ms <n>` overrides the workspace session stale window for that run only
-- `--dry-run` reports the sessions that would be ended and writes nothing
+- it deletes ended manifests older than the retention window (default `604800000`, seven days)
+- the result reports `retention_ms` and `deleted_manifests`
+- `--dry-run` reports the sessions that would be ended and the manifests that would be deleted, and writes nothing
 - it does not cascade to delegated children; each session is judged on its own quiet time
 
 ## Claim Lifecycle
@@ -307,6 +339,10 @@ It refreshes:
 - `claim.heartbeat_at`
 - the session manifest `updated_at`
 
+An authorized file write inside a claimed slot refreshes the same fields implicitly, so active
+work never goes stale while it is happening. That refresh is throttled: it rewrites state at most
+once every 30 seconds per claim, and leaves the registry untouched in between.
+
 ### Release
 
 Normal release is owner-only:
@@ -318,6 +354,7 @@ claimed -> free
 Rules:
 
 - the registry record is cleared back to `status: "free"`, `claim: null`, and `delegations: []`
+- the released claim is recorded on the resource as `last_claim` with the release reason
 - the command response returns a snapshot of the previous claimed state
 - that snapshot uses `release_reason: "manual"` by default
 - `--reason <text>` overrides the release reason in the returned snapshot
@@ -394,6 +431,7 @@ When a claim is stale:
 
 - the janitor records a snapshot of the pre-release resource with `release_reason: "stale-recovery"`
 - the live registry entry is reset to `status: "free"`, `claim: null`, and `delegations: []`
+- the resource keeps `last_claim` with `reason: "stale-recovery"`, so a later write by the lapsed owner is answered with `claim-expired` instead of a bare `slot-not-claimed`
 - `docko status` reports the released snapshots under `janitor.released_claims`
 - the debug log records a `stale-recovery` entry
 
@@ -404,7 +442,7 @@ runtime does not stay active forever.
 
 Threshold:
 
-- `workspace.config.janitor.session_stale_after_ms`, otherwise `86400000`
+- `workspace.config.janitor.session_stale_after_ms`, otherwise `28800000` (8 hours)
 
 Rules:
 
@@ -412,7 +450,9 @@ Rules:
 - invalid timestamps are treated as stale
 - sessions are evaluated after claim recovery, so a claim released in the same pass no longer protects its owner
 - a session that still owns, or is delegated, a claim that survived the pass is never ended
-- ending a stale session marks the manifest exactly like `session end` does; the file is not removed
+- ending a stale session marks and relocates the manifest exactly like `session end` does; the file is not deleted
+- one pass ends at most 100 stale sessions; when more remain, `janitor.ended_sessions_truncated` is `true` and the next pass continues
+- a pass also deletes ended manifests past the retention window, at most 200 per pass, reported as `janitor.deleted_manifests`
 - `docko status` reports the ended manifests under `janitor.ended_sessions`
 - the debug log records a `stale-session-recovery` entry
 
@@ -426,9 +466,27 @@ Rules:
 - non-slot resources are not part of file-path authorization
 - paths outside managed slots are allowed with reason `path-not-managed`
 - writes into a free slot are denied with reason `slot-not-claimed`
-- writes by the owner are allowed with reason `owner-session`
-- writes by a child with explicit `write` delegation are allowed with reason `delegated-child`
+- writes into a slot whose claim the janitor released, by the session that held it, are denied with reason `claim-expired`
+- writes by the owner are allowed with reason `owner`
+- writes by a child with explicit `write` delegation are allowed with reason `delegated`
 - all other writes into a claimed slot are denied with reason `unrelated-session`
+
+The reason vocabulary is closed. Core exports it as `AUTHORIZATION_REASONS`.
+
+The result carries enough context to explain itself:
+
+- `session_id`, `resource_id`, `owner_session_id`
+- `owner_task`, `owner_branch`: what the owner is doing
+- `owner_session_active`: whether the owner session is still active, or `null` when unknown
+- `expired_at`: when the lapsed claim was released, for `claim-expired`
+- `claim_stale_after_ms`: the stale window of the current or last claim
+- `previous_owner_session_id`: who held the slot last, when it is currently free
+
+Cost model:
+
+- a path outside every managed slot is answered from an unlocked registry read: no lock, no session touch, no writes
+- a path inside a managed slot takes the normal locked path, where the answer depends on fresh claim state
+- an allowed write by the owner or a delegate refreshes the claim heartbeat, throttled to once per 30 seconds
 
 ## Status And Mirror Semantics
 
@@ -443,12 +501,17 @@ It includes:
 - `applications`
 - filtered `resources`
 - `janitor.released_claims`
+- `janitor.ended_sessions`, `janitor.ended_sessions_truncated`, `janitor.deleted_manifests`
+
+Reads do not rewrite state. `status`, `session list`, and `logs` leave `registry.json` and
+`registry.md` byte-identical unless the janitor actually changed something in that pass.
 
 ### Mirror
 
-`docko/registry.md` is generated after every registry mutation.
+`docko/registry.md` is regenerated whenever `registry.json` changes, and on demand by `docko render`.
 
-It is a human summary only. It exists to answer operational questions quickly, not to define the contract.
+It is a human summary only. It exists to answer operational questions quickly, not to define the
+contract, so rendering it is best effort: a failed mirror write is logged and never fails the command.
 
 ## Logs
 
@@ -460,6 +523,26 @@ Rules:
 - files rotate by UTC day
 - retention keeps the most recent 3 UTC days
 - `docko logs` reads recent entries newest-first and clamps the query window to retained days
+- retention is enforced once per process, not on every append
+
+## Concurrency And Writes
+
+Registry-backed operations serialize on `docko/.registry.lock/`, a lock directory created with an
+atomic `mkdir`.
+
+Rules:
+
+- the holder writes `owner.json` (`pid`, `hostname`, `acquired_at`) inside the lock directory
+- a waiter polls with jittered backoff (10 ms up to 100 ms) for up to 10 seconds
+- a lock older than 30 seconds is treated as abandoned and may be broken; recovery may be retried
+- the holder releases the lock only while it still owns it, so a lock broken and re-acquired by another process is never deleted from underneath it
+- a locked operation on a root with no `docko/` directory fails with `WORKSPACE_NOT_INITIALIZED`, not a raw filesystem error
+
+Every registry and manifest write is atomic: content is written to a sibling temp file and renamed
+over the target. A rename that fails for a transient reason (`EPERM`, `EBUSY`, `EACCES`,
+`ENOTEMPTY` — typical of Windows file scanners and concurrent readers) is retried with backoff, and
+exhausting the budget raises `ATOMIC_WRITE_FAILED`. Temp artifacts left behind by killed processes
+are swept once per process on the registry write path.
 
 ## Runtime-Neutral CLI Contract
 
@@ -517,6 +600,9 @@ Representative error codes include:
 - `RESOURCE_MUTATION_DENIED`
 - `ROOT_INSIDE_SLOT`
 - `CORRUPTED_REGISTRY`
+- `WORKSPACE_NOT_INITIALIZED`
+- `REGISTRY_LOCK_TIMEOUT`
+- `ATOMIC_WRITE_FAILED`
 
 ## Architectural Boundaries
 

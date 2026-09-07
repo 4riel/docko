@@ -16,7 +16,7 @@ Nothing outside `packages/core` is allowed to redefine claim ownership, delegati
 The core persists three distinct surfaces:
 
 - `docko/registry.json`: workspace metadata, applications, resources, claims, delegations
-- `docko/sessions/*.json`: session manifests
+- `docko/sessions/*.json`: manifests of active sessions, plus `docko/sessions/ended/*.json` for ended ones
 - `docko/logs/*.jsonl`: best-effort debug events
 
 The generated mirror, `docko/registry.md`, is derived output from the registry and is never authoritative.
@@ -26,6 +26,7 @@ This split matters:
 - the registry remains compact and focused on current resource state
 - session freshness can be updated independently without rewriting the whole registry
 - stale recovery can evaluate live session manifests without inventing a second registry truth
+- the hot directory only holds live sessions, so per-command cost does not grow with workspace lifetime
 
 ## Module Boundaries
 
@@ -52,8 +53,10 @@ Responsibilities:
 
 - create a default registry when one does not exist
 - load and clone registry state
-- write `registry.json` atomically
-- regenerate `registry.md` on every write
+- read the registry without the lock for read-only fast paths
+- write `registry.json` atomically, and only when the document actually changed
+- regenerate `registry.md` on every registry write, best effort
+- sweep leftover write artifacts once per process
 - store and update workspace application descriptors
 - discover legacy flat slots from `workspace/slots/`
 - discover application-aware slots from `workspace/slots/<application-id>/`
@@ -68,11 +71,13 @@ Responsibilities:
 
 - create session manifests
 - enforce active session ID uniqueness
-- load specific sessions
+- load specific sessions, active or ended
 - refresh `updated_at`
-- mark sessions ended
-- list active and inactive manifests on disk
-- resolve session identity from explicit, environment, or single-active sources
+- mark sessions ended and relocate their manifests to `sessions/ended/`
+- list active manifests from the hot directory only
+- migrate legacy ended manifests out of the hot directory lazily
+- delete ended manifests past the retention window
+- resolve session identity from explicit, matching-environment, or single-active sources
 
 Session state is intentionally not merged into the registry.
 
@@ -86,7 +91,8 @@ Responsibilities:
 - reject owner-only actions by unrelated sessions
 - allow explicit `--force` recovery for release
 - authorize file writes only for managed slot paths
-- distinguish owner, delegated child, unrelated session, free slot, and non-managed path cases
+- distinguish `owner`, `delegated`, `unrelated-session`, `slot-not-claimed`, `claim-expired`, and `path-not-managed`
+- report owner context (task, branch, liveness) alongside the decision
 
 It does not discover resources, clean stale claims, or persist anything.
 
@@ -101,6 +107,7 @@ Responsibilities:
 - include delegated child session activity in freshness checks
 - snapshot stale resources for reporting and logging
 - clear stale claims and delegations in memory before the registry is written back
+- record the released claim as `last_claim` so the authorizer can report `claim-expired`
 
 The janitor is pure in-memory logic. It does not read files directly.
 
@@ -112,9 +119,13 @@ Responsibilities:
 
 - ensure reads and writes that depend on fresh registry state pass through one serialized path
 - prevent concurrent claims from producing double ownership
+- record the holder in `owner.json` and release the lock only while still holding it
+- break a lock abandoned by a killed process instead of waiting out the full timeout
 - time out instead of waiting forever when the lock cannot be acquired
+- report an uninitialized workspace as `WORKSPACE_NOT_INITIALIZED` rather than a filesystem error
 
 The design choice here is deliberate: even `status` uses the same mutation path so stale cleanup and slot discovery converge on one consistent view.
+The one exception is a write check for a path outside every managed slot, which is answered from an unlocked registry read because no fresh claim state can change the answer.
 
 ### `ResourceCatalog`
 
@@ -149,7 +160,7 @@ Responsibilities:
 
 - append newline-delimited JSON events
 - rotate by UTC day
-- prune retained files to the configured retention window
+- prune retained files to the configured retention window, once per process
 - list recent entries newest-first
 
 Logging is best-effort by design. Failed log writes must not block protocol operations.
@@ -161,15 +172,16 @@ Logging is best-effort by design. Failed log writes must not block protocol oper
 Operations such as `status`, `claim`, `release`, `delegate`, `heartbeat`, `render`, and write-authorization follow the same high-level path:
 
 1. Acquire the mutation lock.
-2. Load or initialize the registry.
+2. Load or initialize the registry, and snapshot its comparable serialization.
 3. Re-discover slot resources from `workspace/slots/`, including application-aware nested slots when applications are configured.
-4. Load current session manifests.
-5. Run stale cleanup in memory.
+4. Load active session manifests, relocating legacy ended ones out of the hot directory.
+5. Run stale cleanup in memory, ending at most 100 stale sessions in one pass.
 6. Execute the operation-specific logic.
-7. Write the updated registry and generated mirror.
-8. Release the lock.
+7. Write the registry and mirror only when the document differs from the snapshot.
+8. Release the lock, if this process still owns it.
 
 This is the main architectural constraint that keeps stale cleanup, slot discovery, and human-readable rendering synchronized.
+Step 7 is what keeps read-only commands read-only: `status`, `session list`, and `logs` write nothing unless the janitor changed something.
 
 ### Session-Heavy Operation
 
