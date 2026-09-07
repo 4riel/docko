@@ -218,7 +218,9 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       owner_session_active: null,
       expired_at: null,
       claim_stale_after_ms: 1000,
-      previous_owner_session_id: null
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-alpha'
     }
   );
 
@@ -235,7 +237,9 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       owner_session_active: null,
       expired_at: null,
       claim_stale_after_ms: 1000,
-      previous_owner_session_id: null
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-alpha'
     }
   );
 
@@ -252,7 +256,9 @@ test('LockBouncer covers delegated, unrelated, free-slot, and malformed claimed 
       owner_session_active: null,
       expired_at: null,
       claim_stale_after_ms: null,
-      previous_owner_session_id: null
+      previous_owner_session_id: null,
+      application_id: null,
+      slot_path: 'slots/app-beta'
     }
   );
 
@@ -336,4 +342,36 @@ test('MutationGate reports timeout when lock directory cannot be acquired', asyn
   } finally {
     Date.now = originalNow;
   }
+});
+
+test('the write heartbeat throttle stays inside the claim stale window', async () => {
+  const { claimHeartbeatThrottleMs } = await import('../packages/core/dist/service.js');
+  const { CLAIM_WRITE_HEARTBEAT_THROTTLE_MS, CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS } =
+    await import('../packages/core/dist/constants.js');
+
+  // A long window keeps the default cap; a short one scales down so several refreshes fit inside
+  // it, which is what stops a 3 s claim expiring between two authorized writes.
+  assert.equal(claimHeartbeatThrottleMs(60 * 60 * 1000), CLAIM_WRITE_HEARTBEAT_THROTTLE_MS);
+  assert.equal(claimHeartbeatThrottleMs(3000), 1000);
+  assert.equal(claimHeartbeatThrottleMs(40_000), 10_000);
+  // Never below the floor, and an unusable value falls back to the default.
+  assert.equal(claimHeartbeatThrottleMs(100), CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS);
+  for (const bad of [null, undefined, 0, -1, Number.NaN]) {
+    assert.equal(claimHeartbeatThrottleMs(bad), CLAIM_WRITE_HEARTBEAT_THROTTLE_MS, String(bad));
+  }
+});
+
+test('a session touch is a no-op once the session has ended', async () => {
+  const root = await makeTempDir('docko-touch-ended-');
+  const sherpa = new SessionSherpa(root);
+
+  await sherpa.start({ sessionId: 'ses_x', runtime: 'shell', workspaceRoot: root });
+  const ended = await sherpa.end('ses_x');
+  const endedPath = path.join(root, 'docko', 'sessions', 'ended', 'ses_x.json');
+  const before = await readFile(endedPath, 'utf8');
+
+  // Ended manifests are deleted by file age, so a touch here would restart their retention clock.
+  const touched = await sherpa.touch('ses_x');
+  assert.equal(touched.updated_at, ended.updated_at);
+  assert.equal(await readFile(endedPath, 'utf8'), before);
 });

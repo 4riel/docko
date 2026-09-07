@@ -415,3 +415,81 @@ test('session resolution ignores an unknown environment id and caps ambiguous ca
     }
   );
 });
+
+test('a slot directory discovered on disk is never writable before it is claimed', async () => {
+  const root = await makeWorkspace('docko-fresh-slot-');
+  const service = new DockoService(root);
+  await service.init();
+  await service.sessionStart({ sessionId: 'owner', runtime: 'shell', workspaceRoot: root });
+
+  // Created after the last registry mutation, so the unlocked snapshot knows nothing about it.
+  await mkdir(path.join(root, 'slots', 'fresh'), { recursive: true });
+
+  const authorization = await service.authorizeFileWrite('owner', 'slots/fresh/index.ts');
+  assert.equal(authorization.allowed, false);
+  assert.equal(authorization.reason, 'slot-not-claimed');
+  assert.equal(authorization.resource_id, 'fresh');
+
+  // Discovery ran on the locked path, so a claim on the new slot is immediately possible.
+  await service.claim({ sessionId: 'owner', resourceType: 'slot', resourceId: 'fresh' });
+  const allowed = await service.authorizeFileWrite('owner', 'slots/fresh/index.ts');
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.reason, 'owner');
+  assert.equal(allowed.slot_path, 'slots/fresh');
+});
+
+test('a short stale window still gets a heartbeat between authorized writes', async () => {
+  const root = await makeWorkspace('docko-short-stale-');
+  const service = new DockoService(root);
+  await service.init();
+  await service.sessionStart({ sessionId: 'owner', runtime: 'shell', workspaceRoot: root });
+  await service.claim({
+    sessionId: 'owner',
+    resourceType: 'slot',
+    resourceId: 'app-alpha',
+    staleAfterMs: 3000
+  });
+
+  // A fixed 30 s throttle never fired inside a 3 s window, so the janitor reclaimed the slot from
+  // under a session that had been writing to it the whole time.
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const authorization = await service.authorizeFileWrite('owner', 'slots/app-alpha/src/index.ts');
+    assert.equal(authorization.allowed, true, authorization.reason);
+    assert.equal(authorization.reason, 'owner');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  const resource = (await readRegistry(root)).resources.find((entry) => entry.resource_id === 'app-alpha');
+  assert.equal(resource.status, 'claimed');
+  assert.equal(resource.claim.owner_session_id, 'owner');
+});
+
+test('stale write artifacts are reclaimed on the read path, including the ended-session directory', async () => {
+  const root = await makeWorkspace('docko-sweep-read-');
+  const service = new DockoService(root);
+  await service.init();
+  await service.sessionStart({ sessionId: 'owner', runtime: 'shell', workspaceRoot: root });
+  await service.sessionEnd('owner');
+
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  const artifacts = [
+    path.join(root, 'docko', 'registry.json.deadbeef.tmp'),
+    path.join(root, 'docko', 'sessions', 'owner.json.deadbeef.tmp'),
+    path.join(root, 'docko', 'sessions', 'ended', 'owner.json.deadbeef.tmp')
+  ];
+  for (const artifact of artifacts) {
+    await writeFile(artifact, 'partial', 'utf8');
+    await utimes(artifact, old, old);
+  }
+
+  // A read-only authorization: writeRegistry never runs, so the sweep has to happen here or the
+  // artifacts survive forever in a workspace whose registry no longer changes.
+  const reader = new DockoService(root);
+  const authorization = await reader.authorizeFileWrite('owner', 'docs/readme.md');
+  assert.equal(authorization.reason, 'path-not-managed');
+
+  for (const artifact of artifacts) {
+    assert.equal(await pathExists(artifact), false, artifact);
+  }
+});

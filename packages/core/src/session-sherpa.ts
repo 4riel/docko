@@ -83,9 +83,14 @@ export class SessionSherpa {
       throw new DockoError('Session not found.', 'SESSION_NOT_FOUND', 4, { session_id: sessionId });
     }
 
+    // Ended manifests are retention-managed by file mtime: rewriting one would restart the
+    // clock that decides when it is deleted, so a touch on an ended session is a no-op.
+    if (session.ended_at) {
+      return session;
+    }
+
     session.updated_at = new Date().toISOString();
-    const target = session.ended_at ? this.endedSessionPath(sessionId) : this.sessionPath(sessionId);
-    await atomicWriteJson(target, session);
+    await atomicWriteJson(this.sessionPath(sessionId), session);
     return session;
   }
 

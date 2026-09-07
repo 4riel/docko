@@ -49,6 +49,7 @@ export class RegistryScribe {
 
   async ensureRegistry(): Promise<RegistryDocument> {
     await ensureDir(this.paths.dockoDir);
+    await this.sweepTempArtifactsOnce();
 
     let registry: RegistryDocument;
     try {
@@ -72,6 +73,9 @@ export class RegistryScribe {
    * Used by read-only fast paths that must never write; returns null when there is no workspace.
    */
   async readRegistryUnlocked(): Promise<RegistryDocument | null> {
+    // Read-only commands are the common case, so the sweep has to happen here too: a workspace
+    // whose registry never changes would otherwise keep every artifact a killed writer left.
+    await this.sweepTempArtifactsOnce();
     try {
       const registry = await readJsonFile<RegistryDocument>(this.paths.registryPath);
       this.validateRegistry(registry);
@@ -118,8 +122,9 @@ export class RegistryScribe {
   }
 
   /**
-   * Reclaims write artifacts from processes killed mid-write.
-   * Once per instance is enough: a CLI invocation writes the registry a handful of times.
+   * Reclaims write artifacts from processes killed mid-write, across the registry, session, and
+   * ended-session directories. Once per instance is enough: a CLI invocation touches the
+   * registry a handful of times, and the sweep itself never throws.
    */
   private async sweepTempArtifactsOnce(): Promise<void> {
     if (this.tempArtifactsSwept) {
@@ -129,6 +134,7 @@ export class RegistryScribe {
     this.tempArtifactsSwept = true;
     await sweepStaleTempArtifacts(this.paths.dockoDir);
     await sweepStaleTempArtifacts(this.paths.sessionsDir);
+    await sweepStaleTempArtifacts(this.paths.sessionsEndedDir);
   }
 
   private async writeMirror(registry: RegistryDocument): Promise<void> {
@@ -286,7 +292,6 @@ export class RegistryScribe {
   async discoverSlotResources(registry: RegistryDocument): Promise<RegistryDocument> {
     const slotDirs = await listDirectories(this.paths.slotsDir);
     const applicationIds = new Set((registry.applications ?? []).map((application) => application.application_id));
-    const discoveredSlotIds = new Set<string>();
     // Free slots are dropped and re-created below; their release history and pins must survive that.
     const lastClaims = new Map(
       registry.resources
@@ -299,24 +304,18 @@ export class RegistryScribe {
         .map((resource) => resource.resource_id)
     );
 
-    registry.resources = registry.resources.filter((resource) => {
-      if (resource.resource_type !== 'slot') {
-        return true;
-      }
-
-      if (discoveredSlotIds.has(resource.resource_id)) {
-        return true;
-      }
-
-      return resource.status === 'claimed';
-    });
+    // Every free slot is re-created below from what is actually on disk, so a free resource
+    // whose directory is gone simply disappears. Claimed slots survive a missing directory:
+    // dropping them would silently discard someone's claim.
+    registry.resources = registry.resources.filter(
+      (resource) => resource.resource_type !== 'slot' || resource.status === 'claimed'
+    );
 
     for (const slotId of slotDirs) {
       if (applicationIds.has(slotId)) {
         const applicationSlots = await listDirectories(path.join(this.paths.slotsDir, slotId));
         for (const slotName of applicationSlots) {
           const resourceId = qualifySlotResourceId(slotId, slotName);
-          discoveredSlotIds.add(resourceId);
           const resource = this.upsertResource(registry, 'slot', resourceId, `slots/${slotId}/${slotName}`, {
             application_id: slotId,
             slot_name: slotName
@@ -326,7 +325,6 @@ export class RegistryScribe {
         continue;
       }
 
-      discoveredSlotIds.add(slotId);
       const resource = this.upsertResource(registry, 'slot', slotId, `slots/${slotId}`, {
         application_id: null,
         slot_name: slotId

@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import {
+  CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS,
   CLAIM_WRITE_HEARTBEAT_THROTTLE_MS,
   DEFAULT_ENDED_SESSION_RETENTION_MS,
   JANITOR_MAX_DELETED_MANIFESTS_PER_PASS,
@@ -40,11 +41,32 @@ import type {
 // Newest active sessions reported when session resolution is ambiguous.
 const AMBIGUOUS_SESSION_CANDIDATES = 10;
 
+/**
+ * How long the authorized-write path may skip refreshing a claim's heartbeat.
+ * The throttle has to stay well inside the claim's own stale window: with a fixed 30 s window a
+ * claim configured to expire after 3 s went stale between two authorized writes. A quarter of
+ * the window gives several refreshes before the janitor would reclaim it.
+ */
+export function claimHeartbeatThrottleMs(staleAfterMs: number | null | undefined): number {
+  if (typeof staleAfterMs !== 'number' || !Number.isFinite(staleAfterMs) || staleAfterMs <= 0) {
+    return CLAIM_WRITE_HEARTBEAT_THROTTLE_MS;
+  }
+
+  return Math.min(
+    CLAIM_WRITE_HEARTBEAT_THROTTLE_MS,
+    Math.max(CLAIM_WRITE_HEARTBEAT_MIN_THROTTLE_MS, Math.floor(staleAfterMs / 4))
+  );
+}
+
 interface JanitorPassOptions {
   // Overrides the workspace session stale window for a single janitor pass.
   sessionStaleAfterMs?: number;
   // Regenerate registry.md even when the registry document itself did not change.
   forceMirror?: boolean;
+  // Drain every legacy ended manifest instead of the capped opportunistic batch. Only the
+  // explicit reclaim path (`session prune`) asks for this; a backlog of thousands would
+  // otherwise need one command per 100 manifests.
+  drainEndedManifests?: boolean;
 }
 
 interface JanitorPassResult {
@@ -207,7 +229,12 @@ export class DockoService {
   async sessionCurrent(sessionId: string): Promise<SessionManifest> {
     return this.withLoggedOperation(
       'session.current',
-      () => this.sessionSherpa.touch(sessionId),
+      async () => {
+        // An ended session is never "current": returning it would hand the caller an id no
+        // write hook accepts, and touching it would restart its retention clock.
+        await this.requireActiveSession(sessionId);
+        return this.sessionSherpa.touch(sessionId);
+      },
       (session) => ({
         runtime: session.runtime,
         actor_mode: session.actor_mode
@@ -258,7 +285,7 @@ export class DockoService {
               janitor.deleted_manifests + deletedManifests
             );
           },
-          { sessionStaleAfterMs: options.maxAgeMs }
+          { sessionStaleAfterMs: options.maxAgeMs, drainEndedManifests: true }
         );
       },
       (result) => ({
@@ -537,7 +564,15 @@ export class DockoService {
    */
   async authorizeFileWrite(sessionId: string, relativeFilePath: string): Promise<AuthorizationResult> {
     const snapshot = await this.registryScribe.readRegistryUnlocked();
-    if (snapshot && !this.lockBouncer.findManagedSlot(snapshot, relativeFilePath)) {
+    // A slot directory created on disk since the last mutation only becomes a registry resource
+    // during slot discovery, which runs on the locked path. Anything under slots/ therefore has
+    // to take the locked path even when nothing matches, or a fresh slot would be writable by
+    // every session.
+    if (
+      snapshot &&
+      !this.lockBouncer.findManagedSlot(snapshot, relativeFilePath) &&
+      !this.lockBouncer.isInsideSlotsTree(relativeFilePath)
+    ) {
       return this.lockBouncer.authorizeFileWrite(snapshot, sessionId, relativeFilePath);
     }
 
@@ -588,7 +623,7 @@ export class DockoService {
     }
 
     const lastBeat = new Date(resource.claim.heartbeat_at ?? resource.claim.updated_at).getTime();
-    if (!Number.isNaN(lastBeat) && Date.now() - lastBeat < CLAIM_WRITE_HEARTBEAT_THROTTLE_MS) {
+    if (!Number.isNaN(lastBeat) && Date.now() - lastBeat < claimHeartbeatThrottleMs(resource.claim.stale_after_ms)) {
       return;
     }
 
@@ -642,7 +677,9 @@ export class DockoService {
     const serialized = this.registryScribe.serialize(registry);
     await this.registryScribe.discoverSlotResources(registry);
     // Legacy workspaces still keep ended manifests in the hot directory; move them lazily.
-    await this.sessionSherpa.relocateEndedManifests(JANITOR_MAX_ENDED_SESSIONS_PER_PASS);
+    await this.sessionSherpa.relocateEndedManifests(
+      options.drainEndedManifests ? Number.POSITIVE_INFINITY : JANITOR_MAX_ENDED_SESSIONS_PER_PASS
+    );
     const sessions = await this.sessionSherpa.listActive();
     const now = new Date();
     // Stale cleanup happens on the shared mutation path so reads and writes converge on one view.

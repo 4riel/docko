@@ -1051,3 +1051,110 @@ test('DockoService persists auto_acquire opt-outs across slot rediscovery', asyn
   const restored = await service.ensureResource({ resourceType: 'slot', resourceId: 'app-alpha', autoAcquire: true });
   assert.equal('auto_acquire' in restored, false);
 });
+
+test('MutationGate quarantines a stale lock by rename so two breakers cannot share it', async () => {
+  const root = await makeTempDir();
+  const dockoDir = path.join(root, 'docko');
+  const lockDir = path.join(dockoDir, '.registry.lock');
+  await mkdir(lockDir, { recursive: true });
+  await writeFile(
+    path.join(lockDir, 'owner.json'),
+    JSON.stringify({ pid: 999999, hostname: 'ghost', acquired_at: new Date(Date.now() - 120_000).toISOString() }),
+    'utf8'
+  );
+
+  // Two gates race for the same abandoned lock. Deleting it outright let both delete a directory
+  // the other had just re-created; renaming it aside means only the rename winner breaks it.
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const run = () =>
+    new MutationGate(lockDir).run(async () => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      concurrent -= 1;
+    });
+
+  await Promise.all([run(), run()]);
+
+  assert.equal(maxConcurrent, 1);
+  assert.equal(await pathExists(lockDir), false);
+  // The quarantined copy is removed by its own breaker, so nothing is left behind.
+  assert.deepEqual(
+    (await readdir(dockoDir)).filter((entry) => entry.startsWith('.registry.lock')),
+    []
+  );
+});
+
+test('MutationGate leaves a lock alone when its owner stamp vanished mid-operation', async () => {
+  const root = await makeTempDir();
+  const lockDir = path.join(root, 'lock');
+  const gate = new MutationGate(lockDir);
+
+  // A missing stamp means a breaker took the lock; deleting the directory now would rob whoever
+  // holds it. Only an acquisition that never managed to stamp may clean up a stampless lock.
+  await gate.run(async () => {
+    rmSync(path.join(lockDir, 'owner.json'), { force: true });
+  });
+
+  assert.equal(await pathExists(lockDir), true);
+  rmSync(lockDir, { recursive: true, force: true });
+});
+
+test('session current refuses an ended session and never touches its manifest', async () => {
+  const root = await makeWorkspace('docko-session-current-ended-');
+  const service = new DockoService(root);
+  await service.init();
+  await service.sessionStart({ sessionId: 'gone', runtime: 'shell', workspaceRoot: root });
+  await service.sessionEnd('gone');
+
+  const endedPath = path.join(root, 'docko', 'sessions', 'ended', 'gone.json');
+  const before = await readFile(endedPath, 'utf8');
+
+  await assert.rejects(
+    () => service.sessionCurrent('gone'),
+    (error) => error.code === 'SESSION_NOT_FOUND'
+  );
+
+  // Rewriting the manifest would restart the retention clock that decides when it is deleted.
+  assert.equal(await readFile(endedPath, 'utf8'), before);
+});
+
+test('session prune drains a legacy ended-manifest backlog in one pass', async () => {
+  const root = await makeWorkspace('docko-prune-drain-');
+  const service = new DockoService(root);
+  await service.init();
+
+  // Legacy workspaces kept ended manifests in the hot directory. The opportunistic janitor only
+  // moves 100 per pass, so a workspace with thousands needed dozens of commands to drain.
+  const sessionsDir = path.join(root, 'docko', 'sessions');
+  const total = 250;
+  for (let index = 0; index < total; index += 1) {
+    const endedAt = new Date(Date.now() - 60_000).toISOString();
+    await writeFile(
+      path.join(sessionsDir, `legacy_${index}.json`),
+      `${JSON.stringify({
+        schema_version: '0.1.0',
+        session_id: `legacy_${index}`,
+        runtime: 'shell',
+        actor_mode: 'interactive',
+        parent_session_id: null,
+        delegated_from_session_id: null,
+        started_at: endedAt,
+        updated_at: endedAt,
+        ended_at: endedAt,
+        workspace_root: root,
+        metadata: {}
+      })}\n`,
+      'utf8'
+    );
+  }
+
+  await service.sessionPrune();
+
+  assert.deepEqual(
+    (await readdir(sessionsDir)).filter((entry) => entry.endsWith('.json')),
+    []
+  );
+  assert.equal((await readdir(path.join(sessionsDir, 'ended'))).length, total);
+});

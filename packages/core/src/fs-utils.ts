@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DockoError } from './errors.js';
-import { TEMP_ARTIFACT_MAX_AGE_MS, TEMP_DIR_PREFIX } from './constants.js';
+import { STALE_LOCK_DIR_PREFIX, TEMP_ARTIFACT_MAX_AGE_MS, TEMP_DIR_PREFIX } from './constants.js';
 
 // Windows fails a rename while an antivirus scanner or a concurrent reader still holds the
 // destination handle. The condition is transient, so retry before giving up.
@@ -107,7 +107,8 @@ export async function sweepStaleTempArtifacts(
   let removed = 0;
 
   for (const entry of entries) {
-    const isTempDir = entry.isDirectory() && entry.name.startsWith(TEMP_DIR_PREFIX);
+    const isTempDir =
+      entry.isDirectory() && (entry.name.startsWith(TEMP_DIR_PREFIX) || entry.name.startsWith(STALE_LOCK_DIR_PREFIX));
     const isTempFile = entry.isFile() && entry.name.endsWith('.tmp');
     if (!isTempDir && !isTempFile) {
       continue;

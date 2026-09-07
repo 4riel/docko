@@ -215,6 +215,10 @@ export interface AuthorizationResult {
   expired_at?: string | null;
   claim_stale_after_ms?: number | null;
   previous_owner_session_id?: string | null;
+  // Slot identity, so an adapter can render a workable retry command without a second lookup.
+  // `slot_path` stays workspace-relative here; the CLI resolves it against the workspace root.
+  application_id?: string | null;
+  slot_path?: string | null;
 }
 
 export type LogOutcome = 'ok' | 'error';

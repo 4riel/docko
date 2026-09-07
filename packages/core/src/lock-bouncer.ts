@@ -84,6 +84,17 @@ export class LockBouncer {
     });
   }
 
+  /**
+   * True for any path under the workspace's slots/ tree, whether or not a registry resource
+   * exists for it yet. Callers use it to decide that a path needs the locked (discovering)
+   * authorization path rather than an unlocked registry snapshot.
+   */
+  isInsideSlotsTree(filePath: string): boolean {
+    const slotsDir = path.resolve(this.workspaceRoot, 'slots');
+    const absolute = toAbsolutePath(this.workspaceRoot, filePath);
+    return absolute === slotsDir || absolute.startsWith(`${slotsDir}${path.sep}`);
+  }
+
   findManagedSlot(registry: RegistryDocument, filePath: string): RegistryResource | null {
     return registry.resources.find((resource) => matchesManagedPath(this.workspaceRoot, resource, filePath)) ?? null;
   }
@@ -160,7 +171,9 @@ export class LockBouncer {
       owner_session_active: this.isSessionActive(knownOwnerSessionId, options.sessions),
       expired_at: reason === 'claim-expired' ? (lastClaim?.released_at ?? null) : null,
       claim_stale_after_ms: claim?.stale_after_ms ?? lastClaim?.stale_after_ms ?? null,
-      previous_owner_session_id: ownerSessionId ? null : (lastClaim?.owner_session_id ?? null)
+      previous_owner_session_id: ownerSessionId ? null : (lastClaim?.owner_session_id ?? null),
+      application_id: resource?.application_id ?? null,
+      slot_path: resource?.path ?? null
     };
   }
 
