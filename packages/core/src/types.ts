@@ -67,6 +67,15 @@ export interface ResourceClaim {
   release_reason: string | null;
 }
 
+export interface ResourceLastClaim {
+  owner_session_id: string;
+  released_at: string;
+  reason: string;
+  branch: string | null;
+  task: string | null;
+  stale_after_ms: number | null;
+}
+
 export interface RegistryResource {
   resource_type: ResourceType | (string & {});
   resource_id: string;
@@ -75,6 +84,8 @@ export interface RegistryResource {
   slot_name?: string | null;
   status: ResourceStatus;
   claim?: ResourceClaim | null;
+  // Last claim released from this resource, kept so a denied write can explain why the slot is free.
+  last_claim?: ResourceLastClaim | null;
   delegations?: ResourceDelegation[];
 }
 
@@ -89,6 +100,9 @@ export interface RegistryDocument {
 export interface StatusJanitorResult {
   released_claims: RegistryResource[];
   ended_sessions: SessionManifest[];
+  // True when the pass hit its per-pass session cap and more stale sessions remain.
+  ended_sessions_truncated: boolean;
+  deleted_manifests: number;
 }
 
 export interface StatusResult {
@@ -108,6 +122,8 @@ export interface SessionPruneOptions {
   // Overrides the workspace session stale timeout for this run only.
   maxAgeMs?: number;
   dryRun?: boolean;
+  // Retention window for ended manifests on disk. Defaults to 7 days.
+  deleteEndedOlderThanMs?: number;
 }
 
 export interface SessionPruneResult {
@@ -115,6 +131,8 @@ export interface SessionPruneResult {
   max_age_ms: number;
   pruned_session_count: number;
   pruned_sessions: SessionManifest[];
+  retention_ms: number;
+  deleted_manifests: number;
 }
 
 export interface SessionStartOptions {
@@ -177,12 +195,22 @@ export interface HeartbeatOptions {
   resourceId: string;
 }
 
+export type AuthorizationReason =
+  'path-not-managed' | 'owner' | 'delegated' | 'slot-not-claimed' | 'claim-expired' | 'unrelated-session';
+
 export interface AuthorizationResult {
   allowed: boolean;
-  reason: string;
+  reason: AuthorizationReason;
   session_id: string;
   resource_id: string | null;
   owner_session_id: string | null;
+  // Present when the answer depends on a claim, so a denial can explain itself without a second call.
+  owner_task?: string | null;
+  owner_branch?: string | null;
+  owner_session_active?: boolean | null;
+  expired_at?: string | null;
+  claim_stale_after_ms?: number | null;
+  previous_owner_session_id?: string | null;
 }
 
 export type LogOutcome = 'ok' | 'error';

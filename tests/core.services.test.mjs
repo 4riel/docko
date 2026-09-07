@@ -5,7 +5,7 @@ import { rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { DEFAULT_CUSTOM_STALE_MS } from '../packages/core/dist/constants.js';
+import { DEFAULT_CUSTOM_STALE_MS, DEFAULT_SESSION_STALE_MS } from '../packages/core/dist/constants.js';
 import { listDirectories, pathExists } from '../packages/core/dist/fs-utils.js';
 import { LockBouncer } from '../packages/core/dist/lock-bouncer.js';
 import { LogScribe } from '../packages/core/dist/log-scribe.js';
@@ -416,16 +416,17 @@ test('DockoService ensures applications and surfaces them in status and the mirr
 
 test('LogScribe keeps only the retained daily files and reads newest entries first', async () => {
   const root = await makeWorkspace('docko-core-logs-');
-  const logs = new LogScribe(root);
 
-  await logs.append(
+  // A fresh instance per append: retention is enforced once per process, not per write.
+  await new LogScribe(root).append(
     { operation: 'day-1', outcome: 'ok', session_id: null, resource_type: null, resource_id: null },
     new Date('2026-01-01T10:00:00.000Z')
   );
-  await logs.append(
+  await new LogScribe(root).append(
     { operation: 'day-2', outcome: 'ok', session_id: null, resource_type: null, resource_id: null },
     new Date('2026-01-02T10:00:00.000Z')
   );
+  const logs = new LogScribe(root);
   await logs.append(
     { operation: 'day-4', outcome: 'ok', session_id: null, resource_type: null, resource_id: null },
     new Date('2026-01-04T10:00:00.000Z')
@@ -696,20 +697,21 @@ test('StaleJanitor also honors fresh delegated child activity when evaluating st
   assert.equal(registry.resources[0].status, 'claimed');
 });
 
-test('StaleJanitor resolves the session stale window from workspace config with a 24 hour fallback', () => {
+test('StaleJanitor resolves the session stale window from workspace config with an 8 hour fallback', () => {
   const janitor = new StaleJanitor();
-  assert.equal(janitor.defaultSessionStaleAfter(buildSessionRegistry()), 24 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_SESSION_STALE_MS, 8 * 60 * 60 * 1000);
+  assert.equal(janitor.defaultSessionStaleAfter(buildSessionRegistry()), DEFAULT_SESSION_STALE_MS);
   assert.equal(
     janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 60000 } })),
     60000
   );
   assert.equal(
     janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 0 } })),
-    24 * 60 * 60 * 1000
+    DEFAULT_SESSION_STALE_MS
   );
   assert.equal(
     janitor.defaultSessionStaleAfter(buildSessionRegistry({ janitor: { session_stale_after_ms: 1.5 } })),
-    24 * 60 * 60 * 1000
+    DEFAULT_SESSION_STALE_MS
   );
 });
 
@@ -883,12 +885,69 @@ test('MutationGate times out when the lock still exists after a recovery attempt
   rmSync(lockDir, { recursive: true, force: true });
 });
 
-test('MutationGate rethrows non-EEXIST acquisition errors', async () => {
+test('MutationGate reports an uninitialized workspace instead of a raw ENOENT', async () => {
   const root = await makeTempDir();
-  const lockDir = path.join(root, 'missing-parent', 'lock');
+  const lockDir = path.join(root, 'docko', '.registry.lock');
   const gate = new MutationGate(lockDir);
 
-  await assert.rejects(() => gate.run(async () => 'never'), /ENOENT/);
+  await assert.rejects(
+    () => gate.run(async () => 'never'),
+    (error) => {
+      assert.equal(error.code, 'WORKSPACE_NOT_INITIALIZED');
+      assert.equal(error.exitCode, 1);
+      assert.match(error.message, /docko init/);
+      return true;
+    }
+  );
+});
+
+test('MutationGate writes an owner file and only releases a lock it still owns', async () => {
+  const root = await makeTempDir();
+  const lockDir = path.join(root, 'lock');
+  const gate = new MutationGate(lockDir);
+
+  let ownerDuringRun = null;
+  await gate.run(async () => {
+    ownerDuringRun = JSON.parse(await readFile(path.join(lockDir, 'owner.json'), 'utf8'));
+  });
+
+  assert.equal(ownerDuringRun.pid, process.pid);
+  assert.equal(typeof ownerDuringRun.hostname, 'string');
+  assert.equal(typeof ownerDuringRun.acquired_at, 'string');
+  assert.equal(await pathExists(lockDir), false);
+
+  // A waiter that broke this lock and re-acquired it must keep its own lock.
+  await gate.run(async () => {
+    await writeFile(
+      path.join(lockDir, 'owner.json'),
+      JSON.stringify({ pid: process.pid + 1, hostname: 'other', acquired_at: new Date().toISOString() }),
+      'utf8'
+    );
+  });
+
+  assert.equal(await pathExists(lockDir), true);
+  rmSync(lockDir, { recursive: true, force: true });
+});
+
+test('MutationGate breaks an abandoned lock immediately instead of waiting for the timeout', async () => {
+  const root = await makeTempDir();
+  const lockDir = path.join(root, 'lock');
+  await mkdir(lockDir);
+  await writeFile(
+    path.join(lockDir, 'owner.json'),
+    JSON.stringify({
+      pid: 999999,
+      hostname: 'ghost',
+      acquired_at: new Date(Date.now() - 120_000).toISOString()
+    }),
+    'utf8'
+  );
+
+  const gate = new MutationGate(lockDir);
+  const startedAt = Date.now();
+  assert.equal(await gate.run(async () => 'recovered'), 'recovered');
+  assert.ok(Date.now() - startedAt < 2_000);
+  assert.equal(await pathExists(lockDir), false);
 });
 
 test('DockoService supports delegated child startup and inheriting parent delegations across owned resources', async () => {
