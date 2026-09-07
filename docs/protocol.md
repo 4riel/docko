@@ -188,6 +188,8 @@ The core recognizes three contract-level resource classes:
 
 Custom resource types are allowed as safe string identifiers. The core does not hardcode extra semantics for them beyond claim ownership and stale recovery.
 
+A slot may carry `auto_acquire: false`. Round-robin selection (`slot acquire`) skips such a slot; an explicit claim or `--prefer` still reaches it. The field is only written for the opt-out (omitted means `true`) and survives slot rediscovery.
+
 ### Applications
 
 Applications are optional workspace-level descriptors stored in the registry.

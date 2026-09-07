@@ -316,19 +316,22 @@ export class DockoService {
             registry,
             options.resourceType,
             options.resourceId,
-            options.path
+            options.path,
+            options.autoAcquire
           );
           return resource;
         }),
       (resource) => ({
         status: resource.status,
-        path: resource.path ?? null
+        path: resource.path ?? null,
+        auto_acquire: resource.auto_acquire ?? true
       }),
       {
         resource_type: options.resourceType,
         resource_id: options.resourceId,
         details: {
-          path: options.path ?? null
+          path: options.path ?? null,
+          auto_acquire: options.autoAcquire ?? null
         }
       }
     );
@@ -798,14 +801,16 @@ export class DockoService {
     registry: RegistryDocument,
     resourceType: string,
     resourceId: string,
-    resourcePath?: string | null
+    resourcePath?: string | null,
+    autoAcquire?: boolean
   ): Promise<RegistryResource> {
     assertSafeId(resourceType, 'resource_type');
     assertSafeId(resourceId, 'resource_id');
     return this.resourceCatalog.ensure(registry, {
       resourceType,
       resourceId,
-      path: resourcePath
+      path: resourcePath,
+      autoAcquire
     });
   }
 

@@ -166,6 +166,11 @@
             }
           ]
         },
+        "auto_acquire": {
+          "type": "boolean",
+          "description": "Optional. When false, `slot acquire` rotation skips this slot; an explicit claim or --prefer still reaches it. Omitted means true.",
+          "default": true
+        },
         "last_claim": {
           "description": "Optional record of the last claim released from this resource. Written on manual, forced, session-end, and stale releases so a denied write can explain why the resource is free.",
           "anyOf": [

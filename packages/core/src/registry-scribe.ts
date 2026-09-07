@@ -287,11 +287,16 @@ export class RegistryScribe {
     const slotDirs = await listDirectories(this.paths.slotsDir);
     const applicationIds = new Set((registry.applications ?? []).map((application) => application.application_id));
     const discoveredSlotIds = new Set<string>();
-    // Free slots are dropped and re-created below; their release history must survive that.
+    // Free slots are dropped and re-created below; their release history and pins must survive that.
     const lastClaims = new Map(
       registry.resources
         .filter((resource) => resource.resource_type === 'slot' && resource.last_claim)
         .map((resource) => [resource.resource_id, resource.last_claim])
+    );
+    const pinnedSlotIds = new Set(
+      registry.resources
+        .filter((resource) => resource.resource_type === 'slot' && resource.auto_acquire === false)
+        .map((resource) => resource.resource_id)
     );
 
     registry.resources = registry.resources.filter((resource) => {
@@ -316,7 +321,7 @@ export class RegistryScribe {
             application_id: slotId,
             slot_name: slotName
           });
-          this.restoreLastClaim(resource, lastClaims);
+          this.restoreSlotMetadata(resource, lastClaims, pinnedSlotIds);
         }
         continue;
       }
@@ -326,17 +331,21 @@ export class RegistryScribe {
         application_id: null,
         slot_name: slotId
       });
-      this.restoreLastClaim(resource, lastClaims);
+      this.restoreSlotMetadata(resource, lastClaims, pinnedSlotIds);
     }
     return registry;
   }
 
-  private restoreLastClaim(
+  private restoreSlotMetadata(
     resource: RegistryResource,
-    lastClaims: ReadonlyMap<string, RegistryResource['last_claim']>
+    lastClaims: ReadonlyMap<string, RegistryResource['last_claim']>,
+    pinnedSlotIds: ReadonlySet<string>
   ): void {
     if (!resource.last_claim && lastClaims.has(resource.resource_id)) {
       resource.last_claim = lastClaims.get(resource.resource_id);
+    }
+    if (pinnedSlotIds.has(resource.resource_id)) {
+      resource.auto_acquire = false;
     }
   }
 

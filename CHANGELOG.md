@@ -33,7 +33,8 @@ All notable changes to `docko-workspace` are documented here. The format is base
 - `docko slot acquire --prefer <slot-id>` takes that slot when it is free and falls back to
   round-robin when it is not; an unknown id fails with `PREFERRED_SLOT_NOT_FOUND`. Slots whose
   registry entry sets `auto_acquire: false` are skipped by automatic selection and stay claimable by
-  name, and `resource ensure` gained `--auto-acquire` / `--no-auto-acquire`.
+  name, and `resource ensure` gained `--auto-acquire` / `--no-auto-acquire`. The opt-out is stored on the
+  registry resource as `auto_acquire: false` and survives slot rediscovery.
 - `docko status --claimed` lists only claimed resources, and every status payload carries
   `resolved_root` plus a `summary` block: per-application free/claimed counts, `my_claims` for the
   resolved session, and `stale_candidates` with the owner's last heartbeat.

@@ -302,7 +302,7 @@ Notes:
 
 - Slot resources are discovered from `slots/`; do not use `resource ensure` to create them.
 - Updating the path of a claimed resource is denied.
-- When `--no-auto-acquire`/`--auto-acquire` is passed, the payload reports the stored `auto_acquire` value and `auto_acquire_persisted: false` if the running docko build did not store it.
+- When `--no-auto-acquire`/`--auto-acquire` is passed, the payload reports the stored `auto_acquire` value (`auto_acquire_persisted` is `true` once the registry recorded it). The opt-out survives slot rediscovery; `true` is the default and is not written to the registry.
 
 ## `docko render`
 

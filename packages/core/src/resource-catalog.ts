@@ -39,6 +39,7 @@ export class ResourceCatalog {
       if (options.path !== undefined && existing.resource_type !== 'slot') {
         existing.path = options.path;
       }
+      applyAutoAcquire(existing, options.autoAcquire);
       return existing;
     }
 
@@ -46,6 +47,7 @@ export class ResourceCatalog {
       await this.registryScribe.discoverSlotResources(registry);
       const discovered = this.registryScribe.getResource(registry, options.resourceType, options.resourceId);
       if (discovered) {
+        applyAutoAcquire(discovered, options.autoAcquire);
         return discovered;
       }
 
@@ -55,6 +57,26 @@ export class ResourceCatalog {
       });
     }
 
-    return this.registryScribe.upsertResource(registry, options.resourceType, options.resourceId, options.path ?? null);
+    const created = this.registryScribe.upsertResource(
+      registry,
+      options.resourceType,
+      options.resourceId,
+      options.path ?? null
+    );
+    applyAutoAcquire(created, options.autoAcquire);
+    return created;
+  }
+}
+
+// `true` is the default, so only the opt-out is persisted; this keeps registries of workspaces
+// that never pin a slot byte-identical.
+function applyAutoAcquire(resource: RegistryResource, autoAcquire: boolean | undefined): void {
+  if (autoAcquire === undefined) {
+    return;
+  }
+  if (autoAcquire) {
+    delete resource.auto_acquire;
+  } else {
+    resource.auto_acquire = false;
   }
 }

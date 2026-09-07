@@ -1028,3 +1028,26 @@ test('DockoService ends delegated child sessions when the parent session ends', 
   assert.ok(endedChild.ended_at);
   assert.equal(peer.ended_at, null);
 });
+
+test('DockoService persists auto_acquire opt-outs across slot rediscovery', async () => {
+  const root = await makeWorkspace('docko-core-auto-acquire-');
+  const service = new DockoService(root);
+  await service.init();
+
+  const pinned = await service.ensureResource({ resourceType: 'slot', resourceId: 'app-alpha', autoAcquire: false });
+  assert.equal(pinned.auto_acquire, false);
+
+  // Free slots are dropped and re-created on every discovery pass; the pin must survive that.
+  await service.render();
+  const status = await service.status();
+  const alpha = status.resources.find((resource) => resource.resource_id === 'app-alpha');
+  const beta = status.resources.find((resource) => resource.resource_id === 'app-beta');
+  assert.equal(alpha.auto_acquire, false);
+  assert.equal('auto_acquire' in beta, false);
+
+  const registry = JSON.parse(await readFile(path.join(root, 'docko', 'registry.json'), 'utf8'));
+  assert.equal(registry.resources.find((resource) => resource.resource_id === 'app-alpha').auto_acquire, false);
+
+  const restored = await service.ensureResource({ resourceType: 'slot', resourceId: 'app-alpha', autoAcquire: true });
+  assert.equal('auto_acquire' in restored, false);
+});

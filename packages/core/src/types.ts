@@ -87,6 +87,8 @@ export interface RegistryResource {
   // Last claim released from this resource, kept so a denied write can explain why the slot is free.
   last_claim?: ResourceLastClaim | null;
   delegations?: ResourceDelegation[];
+  // Omitted means true; only the opt-out from `slot acquire` rotation is persisted.
+  auto_acquire?: boolean;
 }
 
 export interface RegistryDocument {
@@ -163,6 +165,8 @@ export interface EnsureResourceOptions {
   resourceType: string;
   resourceId: string;
   path?: string | null;
+  /** When false, `slot acquire` rotation skips the slot; an explicit claim or --prefer still reaches it. */
+  autoAcquire?: boolean;
 }
 
 export interface EnsureApplicationOptions {
