@@ -200,6 +200,7 @@ Notes:
 - Every status payload carries `resolved_root` and a `summary` block: per-application free/claimed counts, `my_claims` for the resolved session (empty when the session cannot be resolved), and `stale_candidates` — claims quiet for more than half their stale window, with the owner's `last_heartbeat_at` and `age_ms`.
 - If stale claims were released during the read, they appear under `janitor.released_claims`. `--brief` also reports `janitor_ended_sessions_truncated` and `janitor_deleted_manifests`.
 - Free slot resources deleted from `slots/` are dropped from the returned registry state.
+- `ignored_slot_dirs` (full and `--brief`) lists directories under `slots/` whose name is not a valid resource id — a space, a leading `-`, or a `..` segment. They own no resource and can never be claimed, and writes into them are denied until the directory is renamed.
 
 ## `docko logs`
 
@@ -434,7 +435,8 @@ Notes:
 - The install acts on `--root` exactly and never resolves up to an owning workspace. A directory inside another workspace's `slots/` tree fails with `ROOT_INSIDE_SLOT`; a non-workspace directory inside another workspace fails with `ROOT_NOT_WORKSPACE`. Both report `provided_root` and `workspace_root` and name the explicit `--root` to use instead.
 - Generated machine state — `<dest>/plugin.json`, `<dest>/hooks/hooks.json`, and `.claude/settings.docko.json` — is rewritten on every install so it always matches the installed docko version. It is reported under `written_files` only when its content actually changed.
 - The hook launcher carries a `// docko-launcher-version:` header and is refreshed whenever the installed version differs from the shipped one, with or without `--force`. Commands, skills, and template snippets are still preserved unless `--force` is passed.
-- Generated hook commands use the absolute launcher path, so hooks resolve from any working directory and any shell.
+- `--dest` must resolve inside the workspace root. A path that escapes it (`--dest ../outside`) fails with `USAGE_ERROR` rather than scattering hooks and a launcher into an unrelated project.
+- Committed hook config (`.claude/settings.docko.json` and `<dest>/hooks/hooks.json`) stays portable by anchoring on `$CLAUDE_PROJECT_DIR` and `${CLAUDE_PLUGIN_ROOT}`. Only the machine-local `.claude/settings.local.json` written by `--write-settings-local` uses the absolute launcher path, so it resolves from any working directory and any shell.
 - Re-installing an unchanged file reports it under `unchanged_files` rather than `written_files`.
 - Merging into `.claude/settings.local.json` replaces any previous docko registration for an event instead of appending a second one.
 
@@ -450,13 +452,13 @@ docko adapter claude-code doctor --root ./workspace --fix
 Options:
 
 - `--dest <path>` inspects a non-default plugin destination.
-- `--fix` removes docko hook registrations that point at a launcher which does not exist or is out of date, and collapses duplicate registrations for an event down to the first healthy one. After fixing, the diagnosis is re-run, so `issues` and `ok` describe the install as it is now; `fixed` lists what changed.
+- `--fix` removes docko hook registrations that point at a launcher which does not exist or is out of date, and collapses duplicate registrations down to the first healthy one. Duplicates are judged per event *and* matcher: two `PreToolUse` entries matching `Edit|Write` are duplicates, while `Edit|Write` and `NotebookEdit` are two deliberate hooks and both survive. After fixing, the diagnosis is re-run, so `issues` and `ok` describe the install as it is now; `fixed` lists what changed.
 
 Reports:
 
 - `launcher`: installed path, version header, and whether it matches the shipped version.
 - `plugin_manifest`: the generated `<dest>/plugin.json`, its version, and whether it matches the installed docko version. Drift here means the install predates the docko on PATH; re-run `install`.
-- `settings_files`: docko hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, with duplicate and stale counts. Entries anchored on `${CLAUDE_PLUGIN_ROOT}` belong to the installed plugin and are left alone.
+- `settings_files`: docko hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, with duplicate and stale counts. Duplicate issues name the event and the matcher they were found under. Entries anchored on `${CLAUDE_PLUGIN_ROOT}` belong to the installed plugin and are left alone.
 - `docko_binary`: `DOCKO_BIN`, the resolved PATH entry, and the `npx` fallback used when neither is available.
 - `session`: `DOCKO_SESSION_ID` and `CLAUDE_CODE_SESSION_ID` as this shell sees them.
 - `issues` with `fixable` flags, `fixed` for what `--fix` changed, and `ok`.

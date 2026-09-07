@@ -24,18 +24,24 @@ All notable changes to `docko-workspace` are documented here. The format is base
   task, stale window), so a denied write can explain why a slot is free. The field is optional in
   `schemas/registry.schema.json`.
 - The write-authorization result now carries `owner_task`, `owner_branch`, `owner_session_active`,
-  `expired_at`, `claim_stale_after_ms`, `previous_owner_session_id`, `application_id`, and
-  `slot_path`, and core exports the closed reason vocabulary as `AUTHORIZATION_REASONS`. The
-  Claude Code deny message uses `application_id` to render a usable `--application` flag.
+  `expired_at`, `claim_stale_after_ms`, `previous_owner_session_id`, `application_id`, `slot_path`,
+  `invalid_slot_dir`, and `session_known`, and core exports the closed reason vocabulary as
+  `AUTHORIZATION_REASONS`. The Claude Code deny message uses `application_id` to render a usable
+  `--application` flag.
+- `docko status` reports `ignored_slot_dirs` (full and `--brief`): directories under `slots/` whose
+  name is not a valid resource id, which discovery now skips instead of registering a slot that
+  could never be claimed.
+- `REGISTRY_LOCK_LOST` (exit 2): the lock this command held was broken before it could persist.
+  Nothing was written; the command is safe to retry.
 - The registry lock directory records its holder in `owner.json` (`pid`, `hostname`, `acquired_at`),
   and `REGISTRY_LOCK_TIMEOUT` now reports the lock directory, the wait duration, and that owner.
 - `docko adapter claude-code doctor [--fix]` reports launcher and plugin manifest version drift,
   duplicate or dangling docko hook registrations in `.claude/settings.json` and
   `.claude/settings.local.json`, how the `docko` binary resolves, and the session id the shell
   exports. `--fix` removes registrations that point at a launcher which is missing or out of date
-  and collapses duplicate registrations for an event down to the first healthy one, then re-runs
-  the diagnosis so `issues` and `ok` describe the post-fix state. The plugin ships it as
-  `/dock-doctor`.
+  and collapses duplicate registrations for one event and matcher down to the first healthy one,
+  then re-runs the diagnosis so `issues` and `ok` describe the post-fix state. The plugin ships it
+  as `/dock-doctor`.
 - `docko slot acquire --prefer <slot-id>` takes that slot when it is free and falls back to
   round-robin when it is not; an unknown id fails with `PREFERRED_SLOT_NOT_FOUND`. Slots whose
   registry entry sets `auto_acquire: false` are skipped by automatic selection and stay claimable by
@@ -56,7 +62,8 @@ All notable changes to `docko-workspace` are documented here. The format is base
   are answered before any workspace resolution, so `docko init --root <slot> --help` prints usage
   instead of failing.
 - `AMBIGUOUS_SESSION` errors carry `suggested_command`: the command that was just run, re-rendered
-  with `--session` filled in from the runtime's own session id.
+  with `--session` filled in from `newest_session_id` — the newest active session, or the first
+  listed candidate. Its arguments are quoted, so a task or path with spaces stays runnable.
 - The Claude Code SessionStart hook exports `DOCKO_SESSION_ID`, `DOCKO_RUNTIME`, and `DOCKO_ROOT`
   through `$CLAUDE_ENV_FILE`, so later Bash tool calls in the session resolve their own session
   without an explicit `--session`. Its `additionalContext` now states the session id, the workspace
@@ -67,8 +74,9 @@ All notable changes to `docko-workspace` are documented here. The format is base
 ### Changed
 
 - Write checks for paths outside the workspace's `slots/` tree are answered from an unlocked
-  registry read: no lock, no session touch, no writes. Anything under `slots/` takes the locked
-  path, where an allowed write by the owner or a delegate refreshes the claim heartbeat. The
+  registry read: no registry lock, no session read, and no registry or session writes. Anything
+  under `slots/` takes the locked path, where an allowed write by the owner or a delegate refreshes
+  the claim heartbeat. The
   refresh is throttled to `min(30_000, max(1_000, floor(stale_after_ms / 4)))` ms, so a claim with
   a short stale window still gets several heartbeats inside it.
 - Authorization reasons are now `path-not-managed`, `owner`, `delegated`, `slot-not-claimed`,
@@ -84,10 +92,21 @@ All notable changes to `docko-workspace` are documented here. The format is base
   resolution.
 - The registry lock waits up to 10 seconds with jittered backoff, breaks a lock abandoned for more
   than 30 seconds immediately instead of waiting out the timeout, and retries recovery. Breaking a
-  lock renames it aside to a unique `docko/.registry.lock.stale-<random>` before deleting it, and
-  the acquirer reads its own `owner.json` stamp back before running, so two processes can never
-  hold the lock at once. Staleness is judged by age only; the recorded `pid` is diagnostic and is
-  never probed for liveness.
+  lock renames it aside to a unique `docko/.registry.lock.stale-<random>` before deleting it; the
+  acquirer reads its own `owner.json` stamp back before running, a holder re-stamps itself every 10
+  seconds so a live holder is never judged abandoned, and the stamp is re-checked immediately before
+  the registry write. Two processes can still both believe they hold the lock — a suspended holder
+  can be broken — but the one that lost it fails with `REGISTRY_LOCK_LOST` instead of writing.
+  Staleness is judged by age only, from the older of `acquired_at` and the lock directory's mtime,
+  with a stamp more than a second in the future counted as the oldest possible time; the recorded
+  `pid` is diagnostic and is never probed for liveness.
+- `docko adapter claude-code doctor --fix` treats registrations as duplicates only when they share
+  both the event and the (normalized) matcher, so a deliberate second `PreToolUse` registration for
+  `NotebookEdit` survives alongside `Edit|Write`. Duplicate issues name the matcher, and every hook
+  issue carries a `matcher` field.
+- `adapter claude-code install|settings|doctor` and `init --dest` refuse a `--dest` that resolves
+  outside the workspace root with `USAGE_ERROR`, and normalize an absolute `--dest` inside the root
+  to a workspace-relative path so committed settings stay portable.
 - Debug log retention is enforced once per process instead of on every append.
 - The CLI resolves the session from `DOCKO_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID`, then the
   single active session.
@@ -131,7 +150,8 @@ All notable changes to `docko-workspace` are documented here. The format is base
 - `AMBIGUOUS_SESSION` no longer suggests the environment session id that just failed to resolve.
   The suggestion is the newest active session, or the first listed candidate.
 - `docko status` no longer reports an environment session id that names no active session in this
-  workspace; the summary omits `session_id` instead.
+  workspace. It falls through to normal resolution instead, and `summary.session_id` is omitted
+  only when nothing resolves.
 - `docko session current` refuses an ended session with `SESSION_NOT_FOUND` instead of returning it
   and restarting its retention clock; touching an ended manifest is now a no-op.
 - A non-dry `session prune` drains every legacy ended manifest in one pass instead of the 100 per
@@ -151,6 +171,25 @@ All notable changes to `docko-workspace` are documented here. The format is base
   `WORKSPACE_NOT_INITIALIZED` and an actionable `docko init` message instead of a raw `ENOENT`.
 - `release` on a resource that is already free reports `RESOURCE_NOT_CLAIMED` with an explanation
   instead of a bare non-zero exit, and a non-owner release suggests `--force` explicitly.
+- A lock stamp dated in the future no longer wedges the workspace forever. Staleness now uses the
+  older of `owner.json`'s `acquired_at` and the lock directory's mtime, and a future value counts
+  as the oldest possible time instead of making every command fail with `REGISTRY_LOCK_TIMEOUT`.
+- `mkdir` on the lock directory now treats `EPERM`/`EACCES` — Windows' answer while a delete is
+  still pending — as a reason to keep waiting rather than crashing the command.
+- Slot authorization compares paths with `path.relative` semantics instead of case-sensitive string
+  prefixes, so on Windows a lower-case drive letter or an upper-case `SLOTS` segment no longer
+  answers `path-not-managed` and lets an unauthorized write through.
+- `resource ensure --auto-acquire/--no-auto-acquire` no longer fails on a claimed slot or wipes the
+  `path` of a non-slot resource: an absent `--path` now means "leave it alone" rather than "clear
+  it".
+- `adapter claude-code pre-tool-use` reads the runtime's `session_id` from the hook payload before
+  falling back to single-active resolution, and a session docko has never seen is answered as a
+  session that owns nothing (`session_known: false`) instead of failing with `SESSION_NOT_FOUND`,
+  which made the fail-open launcher allow the write it was supposed to block.
+- A `slots/` directory whose name is not a valid resource id (`slots/my slot`) was discovered but
+  could never be claimed, leaving writes into it denied forever. Discovery now skips it, `status`
+  reports it under `ignored_slot_dirs`, and the deny message says to rename the directory. Slot ids
+  in deny messages are quoted, so a suggested command with a space in it stays runnable.
 
 ## [0.1.0-alpha.15]
 

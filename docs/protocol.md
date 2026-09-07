@@ -225,6 +225,7 @@ Rules:
 - legacy flat slots are tracked as `slots/<slot-id>` with `resource_id: "<slot-id>"`
 - application-aware slots are tracked as `slots/<application-id>/<slot-name>` with `resource_id: "<application-id>.<slot-name>"`
 - application-aware slots also record `application_id` and `slot_name`
+- a slot or application directory whose name is not a valid resource id is skipped: it would be discovered but never claimable, which left writes into it denied forever. Skipped directories are reported as `ignored_slot_dirs` in the status payload, and writes into them are still denied — the fix is to rename the directory
 
 ### Non-Slot Resources
 
@@ -490,10 +491,16 @@ The result carries enough context to explain itself:
 - `claim_stale_after_ms`: the stale window of the current or last claim
 - `previous_owner_session_id`: who held the slot last, when it is currently free
 - `application_id` and `slot_path`: the slot's identity, so an adapter can render a usable retry command
+- `invalid_slot_dir`: the offending directory when the write targets a slot directory whose name is not a valid resource id
+- `session_known`: whether the acting session is registered and active. `false` means the runtime's SessionStart hook never ran, so the session owns nothing; `null` on the unlocked fast path, which does not read session state
+
+An unregistered or ended session is answered, not rejected: it is evaluated as a session with no
+claims and no delegations, so a write inside `slots/` is denied with its natural reason and
+`session_known: false`. Failing the check instead let a fail-open adapter allow the write.
 
 Cost model:
 
-- a path outside the workspace's `slots/` tree is answered from an unlocked registry read: no lock, no session touch, no writes
+- a path outside the workspace's `slots/` tree is answered from an unlocked registry read: no registry lock, no session read, and no registry or session writes (abandoned temp artifacts are still swept)
 - a path anywhere under `slots/` takes the normal locked path, whether or not a resource exists for it yet: slot discovery runs there, so a directory created since the last mutation is answered as the unclaimed slot it is, not as an unmanaged path
 - an allowed write by the owner or a delegate refreshes the claim heartbeat, throttled to `min(30_000, max(1_000, floor(claim.stale_after_ms / 4)))` ms
 
@@ -509,6 +516,7 @@ It includes:
 - `workspace`
 - `applications`
 - filtered `resources`
+- `ignored_slot_dirs`
 - `janitor.released_claims`
 - `janitor.ended_sessions`, `janitor.ended_sessions_truncated`, `janitor.deleted_manifests`
 
@@ -543,8 +551,10 @@ Rules:
 
 - the holder writes `owner.json` (`pid`, `hostname`, `acquired_at`) inside the lock directory, then reads it back: only the process whose stamp survived holds the lock, so a directory removed between the `mkdir` and the stamp does not hand two processes the same lock
 - a waiter polls with jittered backoff (10 ms up to 100 ms) for up to 10 seconds
-- a lock older than 30 seconds is treated as abandoned and may be broken. Staleness is judged purely by age (`owner.json`'s `acquired_at`, or the directory mtime when it is unreadable); the recorded pid is diagnostic only and is never probed for liveness
+- the holder re-stamps `owner.json` every 10 seconds on an unref'd timer and moves the lock directory's mtime with it, so a living holder stays fresh however long its operation runs
+- a lock older than 30 seconds is treated as abandoned and may be broken. Staleness is judged purely by age, from the older of `owner.json`'s `acquired_at` and the lock directory's mtime; a timestamp more than a second in the future (clock skew, a restored backup) counts as the oldest possible time rather than postponing recovery forever, while a sub-second difference is filesystem timestamp precision and reads as "now". The recorded pid is diagnostic only and is never probed for liveness
 - breaking a lock renames it to a unique `docko/.registry.lock.stale-<random>` and deletes that, so only the process that won the rename breaks it and no one deletes a lock a third process has already re-created
+- the holder re-checks its stamp immediately before persisting the registry. If the lock was broken under it, the operation fails with `REGISTRY_LOCK_LOST` (exit 2) and writes nothing; retrying the command is the fix
 - the holder releases the lock only while it still owns it, so a lock broken and re-acquired by another process is never deleted from underneath it
 - a locked operation on a root with no `docko/` directory fails with `WORKSPACE_NOT_INITIALIZED`, not a raw filesystem error
 
@@ -614,6 +624,7 @@ Representative error codes include:
 - `CORRUPTED_REGISTRY`
 - `WORKSPACE_NOT_INITIALIZED`
 - `REGISTRY_LOCK_TIMEOUT`
+- `REGISTRY_LOCK_LOST`
 - `ATOMIC_WRITE_FAILED`
 
 ## Architectural Boundaries

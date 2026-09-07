@@ -37,6 +37,8 @@ Plugin behavior worth knowing:
   - `slot-not-claimed`: the slot is free (with its previous owner when known), and the message carries a `docko slot acquire --prefer <slot>` line.
   - `claim-expired`: your own claim lapsed, with the expiry time and the quiet window, and a `docko claim` line that restores it with the same branch and task.
   - `unrelated-session`: another session owns it, with that session's task, branch, and whether it is still active, plus a `docko release --force` line for a deliberate takeover.
+- A write into a `slots/` directory whose name is not a valid resource id is denied with the directory name and the instruction to rename it. Such a directory is never registered as a slot, so claiming it is impossible and only a rename clears the block.
+- When the acting session is not registered with docko — the SessionStart hook did not run — the write is evaluated as a session that owns nothing, and the denial adds the `docko session start` line that registers it. The hook does not fail, so a fail-open launcher can no longer turn a missing session into an allowed write.
 
 ## Repo-Local Install (`docko init --claude`)
 
@@ -223,7 +225,7 @@ The adapter tests cover the important parts of that claim:
 - the generated hook commands are absolute and shell-neutral, and match the plugin bundle's matchers and timeouts
 - install writes the expected repo-local assets and refreshes an outdated hook launcher
 - settings merging is idempotent and never leaves a duplicate docko registration
-- `PreToolUse` authorizes writes inside a claimed slot, and each denial reason renders its own recovery command
+- `PreToolUse` authorizes writes inside a claimed slot, and each denial reason renders its own recovery command with every slot id and path quoted
 - `SessionStart` exports `DOCKO_SESSION_ID` through `$CLAUDE_ENV_FILE`
 - `SubagentStart` is part of the installed hook surface
 
@@ -250,5 +252,5 @@ This repo does not currently ship a Docko Codex adapter package, Codex templates
 - The Node hook launcher prefers `docko` on `PATH` and falls back to `npx docko-workspace@alpha` when it is missing. For local testing, set `DOCKO_BIN` to an absolute executable path (on Windows a multi-token value like `node "C:\path\to\docko.js"` also works).
 - If you do not want automatic settings merging, install without `--write-settings-local` and merge `.claude/settings.docko.json` manually.
 - The repo-local `.claude-plugin/docko/` bundle is intentionally plain. It avoids hiding protocol logic behind opaque Claude-only behavior.
-- Run `docko adapter claude-code doctor` (or `/dock-doctor`) when hooks misbehave. It reports launcher and plugin manifest version drift, duplicate or dangling hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, how `docko` resolves, and the session id this shell sees. `--fix` removes registrations that point at a launcher which is missing or out of date, collapses duplicate registrations for an event down to the first healthy one, and re-runs the diagnosis so `issues` and `ok` describe the post-fix state.
+- Run `docko adapter claude-code doctor` (or `/dock-doctor`) when hooks misbehave. It reports launcher and plugin manifest version drift, duplicate or dangling hook registrations in `.claude/settings.json` and `.claude/settings.local.json`, how `docko` resolves, and the session id this shell sees. `--fix` removes registrations that point at a launcher which is missing or out of date, collapses duplicate registrations down to the first healthy one per event *and* matcher (so a deliberate second registration with a different matcher survives), and re-runs the diagnosis so `issues` and `ok` describe the post-fix state.
 - The installed launcher carries a `// docko-launcher-version:` header. `docko adapter claude-code install` refreshes it whenever it differs from the shipped version, even without `--force`, because a stale launcher silently degrades every hook.

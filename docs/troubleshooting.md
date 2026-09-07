@@ -149,6 +149,12 @@ The resource ID is unsafe. Path traversal and spaces are rejected.
 
 Use simple IDs such as `main`, `app-alpha`, or `staging`.
 
+### A slot directory that never appears in `status`
+
+A directory under `slots/` whose name is not a valid resource id (`slots/my slot`, `slots/-tmp`) is skipped by discovery and listed under `ignored_slot_dirs` instead. It owns no resource, so it can never be claimed, and writes into it are denied with a message naming the directory.
+
+Rename the directory to a valid id and re-run `docko status`. The claim then works normally.
+
 ### `ROOT_PARENT_NOT_FOUND`
 
 The parent folder of `--root` does not exist yet.
@@ -277,10 +283,16 @@ Another docko process held `docko/.registry.lock/` for longer than the wait budg
 What to check:
 
 1. Is another docko command, hook, or poller running? Concurrent hooks on a busy workspace are the usual cause; retry with a short backoff instead of a fixed interval.
-2. How old is the lock? Staleness is judged purely by age: a lock older than 30 seconds is treated as abandoned and broken automatically by the next caller. The recorded `pid` is diagnostic only — docko never probes it for liveness, so a live process that holds the lock for more than 30 seconds can have it broken, and a dead owner's lock is not broken any faster than an old live one.
+2. How old is the lock? Staleness is judged purely by age, from the older of the stamp's `acquired_at` and the lock directory's mtime: a lock older than 30 seconds is treated as abandoned and broken automatically by the next caller. A live holder re-stamps itself every 10 seconds, so only a process that died or was suspended reaches that age. A stamp dated more than a second in the future (clock skew, a restored backup) counts as the oldest possible time, so it can never wedge the workspace; a sub-second difference is filesystem timestamp precision and reads as "now". The recorded `pid` is diagnostic only — docko never probes it for liveness.
 3. If the lock somehow survives, deleting `docko/.registry.lock/` is safe when no docko process is running. A `docko/.registry.lock.stale-*` directory is a lock docko quarantined while breaking it; it is deleted immediately and is only left behind by a process killed mid-break, after which the temp sweeper reclaims it.
 
 Pollers that call `docko status` on a timer should back off after repeated timeouts rather than retrying at the same rate.
+
+### `REGISTRY_LOCK_LOST`
+
+The lock this command held was broken by another process before it could persist. That means the command ran longer than the 30-second stale window without its refresh timer getting a turn — a suspended laptop, or a process frozen by a debugger.
+
+Nothing was written: the check happens immediately before the registry write. Retry the command.
 
 ### `ATOMIC_WRITE_FAILED` and `EPERM: operation not permitted, rename`
 
