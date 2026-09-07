@@ -751,10 +751,23 @@ function quoteCliArgument(value: string): string {
     return value;
   }
   // Windows paths must stay readable, so only backslashes that would swallow a quote are doubled:
-  // runs before an embedded quote and a trailing run before the closing quote we add.
-  const escaped = value
-    .replace(/(\\*)"/g, (_match, slashes: string) => `${slashes}${slashes}\\"`)
-    .replace(/(\\+)$/, (_match, slashes: string) => `${slashes}${slashes}`);
+  // runs before an embedded quote and a trailing run before the closing quote we add. A single
+  // linear scan keeps this free of backtracking on long backslash runs.
+  let escaped = '';
+  let pendingBackslashes = 0;
+  for (const char of value) {
+    if (char === '\\') {
+      pendingBackslashes += 1;
+      continue;
+    }
+    if (char === '"') {
+      escaped += `${'\\'.repeat(pendingBackslashes * 2 + 1)}"`;
+    } else {
+      escaped += `${'\\'.repeat(pendingBackslashes)}${char}`;
+    }
+    pendingBackslashes = 0;
+  }
+  escaped += '\\'.repeat(pendingBackslashes * 2);
   return `"${escaped}"`;
 }
 
