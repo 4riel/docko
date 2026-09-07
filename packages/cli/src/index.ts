@@ -323,7 +323,9 @@ Run "docko <command> --help" for that command's usage.
 
 Global options:
   --root <path>       Workspace root (default: DOCKO_ROOT env or cwd). Resolves up to the owning
-                      workspace when it points inside a slot; only "init" refuses that.
+                      workspace when it points inside one. "init" and
+                      "adapter claude-code install" never resolve up: they refuse a directory
+                      inside slots/, and install also refuses one that is not a workspace root.
   --session <id>      Session ID (default: DOCKO_SESSION_ID or CLAUDE_CODE_SESSION_ID env,
                       otherwise the single active session)
   --brief             Return an agent-friendly compact payload for supported commands
@@ -371,17 +373,75 @@ Status options:
   --application <id>  List only one application's resources
 
 Session prune options:
-  --max-age-ms <n>    Quiet time after which a session is ended (default: workspace session stale timeout)
-  --retention-ms <n>  Delete ended session manifests older than this (default: 7 days)
-                      (alias: --delete-ended-older-than-ms)
+  --max-age-ms <n>    Quiet time after which a session is ended (default: workspace session stale
+                      timeout). 0 means "now".
+  --retention-ms <n>  Delete ended session manifests older than this (default: 7 days, 0 means
+                      "now") (alias: --delete-ended-older-than-ms)
   --dry-run           Report the sessions that would be ended without changing anything
 `;
   process.stdout.write(help);
 }
 
 // Per-command usage. Agents ask `docko <command> --help` and a single generic page taught them
-// nothing about the command they were actually running.
+// nothing about the command they were actually running. Namespaces get a page too: `docko slot
+// --help` should list the slot commands, not reprint the whole CLI.
 const COMMAND_HELP: Record<string, string> = {
+  app: `docko app — application commands
+
+Commands:
+  app ensure    Register an application and optionally seed its slot set
+
+Run "docko app ensure --help" for its usage.
+`,
+  slot: `docko slot — slot commands
+
+Commands:
+  slot acquire     Claim a free slot, or clone one when every slot is busy
+  slot duplicate   Duplicate a repo or slot into a managed slot
+
+Run "docko slot <command> --help" for that command's usage.
+`,
+  resource: `docko resource — resource commands
+
+Commands:
+  resource ensure   Register or update a resource
+
+Run "docko resource ensure --help" for its usage.
+`,
+  session: `docko session — session commands
+
+Commands:
+  session start     Start a new session
+  session end       End a session and release its claims
+  session current   Show or resolve the current session
+  session list      List active sessions
+  session prune     End sessions that have gone quiet
+
+Run "docko session <command> --help" for that command's usage.
+`,
+  adapter: `docko adapter — runtime adapter commands
+
+Commands:
+  adapter claude-code   Claude Code adapter (the only implemented runtime adapter)
+
+Run "docko adapter claude-code --help" for its commands.
+`,
+  'adapter claude-code': `docko adapter claude-code — Claude Code adapter
+
+Commands:
+  adapter claude-code install         Install repo-local Claude Code assets
+  adapter claude-code settings        Print the Claude Code hook settings fragment
+  adapter claude-code doctor          Diagnose a repo-local Claude Code install
+  adapter claude-code session-start   Start a Claude Code session (hook)
+  adapter claude-code session-end     End a Claude Code session (hook)
+  adapter claude-code pre-tool-use    Authorize a file write (hook)
+  adapter claude-code subagent-start  Start a delegated subagent (hook)
+
+The hook subcommands read a Claude Code hook payload on stdin and are invoked by the launcher,
+not by hand.
+
+Run "docko adapter claude-code <command> --help" for that command's usage.
+`,
   init: `docko init — initialize a workspace and discover slots
 
 Usage: docko init [--root <path>] [options]
@@ -514,13 +574,19 @@ Usage: docko session prune [--max-age-ms <n>] [--retention-ms <n>] [--dry-run] [
 
 --retention-ms (alias --delete-ended-older-than-ms) defaults to 7 days and deletes ended session
 manifests from docko/sessions/ended/. The result reports retention_ms and deleted_manifests.
+Both duration options accept 0, meaning "cut off at now".
 `,
   'adapter claude-code install': `docko adapter claude-code install — install repo-local Claude Code assets
 
 Usage: docko adapter claude-code install [--dest <path>] [--write-settings-local] [--force]
 
-The hook launcher is refreshed automatically when the shipped version differs from the installed
-one. Other managed files are preserved unless --force is passed.
+Installs into --root exactly (never an ancestor workspace): it refuses a directory inside another
+workspace's slots/ with ROOT_INSIDE_SLOT, and a non-workspace directory inside another workspace
+with ROOT_NOT_WORKSPACE.
+
+Generated machine state (plugin.json, hooks/hooks.json, .claude/settings.docko.json) is always
+rewritten. The hook launcher is refreshed when the shipped version differs from the installed one.
+Other managed files are preserved unless --force is passed.
 `,
   'adapter claude-code settings': `docko adapter claude-code settings — print the Claude Code hook settings fragment
 
@@ -579,30 +645,28 @@ function isPathInsideSlots(workspaceRootPath: string, candidate: string): boolea
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-// Resolve the workspace root a command should operate on. The starting point is still
-// --root / DOCKO_ROOT / cwd, but when that points below a real workspace we resolve UP to the
-// owning root so docko never fragments its state into a slot. `init` is exempt because it
-// legitimately scaffolds a fresh workspace at the given location.
+// Commands that scaffold assets act on the directory they were pointed at, never on an ancestor:
+// silently writing a workspace or an adapter install into the parent project is the one failure
+// mode nobody notices until the files are committed.
+const SCAFFOLDING_COMMANDS = new Set(['init', 'adapter claude-code install']);
+
+function isScaffoldingCommand(command: string[]): boolean {
+  return SCAFFOLDING_COMMANDS.has(command[0] ?? '') || SCAFFOLDING_COMMANDS.has(command.slice(0, 3).join(' '));
+}
+
+// Resolve the workspace root a command should operate on. The starting point is always
+// --root / DOCKO_ROOT / cwd. Read/write commands resolve UP to the owning workspace so an agent
+// can run them from inside a slot; scaffolding commands stay where they were pointed and refuse
+// the ambiguous cases instead of guessing.
 function resolveWorkspaceRoot(command: string[], options: OptionMap): string {
   const startDir = path.resolve(workspaceRoot(options));
   const ownedRoot = hasRegistryAt(startDir) ? startDir : findWorkspaceRoot(startDir);
 
-  // `init` scaffolds a workspace at the given location, so it never walks up. An explicit
-  // --root inside a managed slot stays a loud failure there: that is the one case where
-  // resolving up would silently leak a second registry into a slot.
-  if (command[0] === 'init') {
-    if (
-      ownedRoot &&
-      ownedRoot !== startDir &&
-      option(options, 'root') !== null &&
-      isPathInsideSlots(ownedRoot, startDir)
-    ) {
-      throw new DockoError(
-        `--root points inside the managed slot ${startDir}. Initialize the workspace root instead: docko init --root "${ownedRoot}"`,
-        'ROOT_INSIDE_SLOT',
-        1,
-        { provided_root: startDir, workspace_root: ownedRoot }
-      );
+  if (isScaffoldingCommand(command)) {
+    // The guard applies whether or not --root was passed: a bare `docko init` inside a slot is
+    // the same mistake as an explicit --root pointing there.
+    if (ownedRoot && ownedRoot !== startDir) {
+      assertScaffoldingRoot(command, startDir, ownedRoot);
     }
 
     return startDir;
@@ -611,6 +675,31 @@ function resolveWorkspaceRoot(command: string[], options: OptionMap): string {
   // Every other command resolves UP to the owning workspace. Agents routinely run docko with
   // `--root .` from inside a slot; that is the same intent as no --root at all, so it must work.
   return ownedRoot ?? startDir;
+}
+
+// `startDir` has no registry of its own and sits under `ownedRoot`. Inside slots/ that is always
+// wrong. Outside slots/ a nested workspace is legitimate, so only `install` — which has no
+// business writing hooks into a parent project — refuses it.
+function assertScaffoldingRoot(command: string[], startDir: string, ownedRoot: string): void {
+  const label = command[0] === 'init' ? 'docko init' : 'docko adapter claude-code install';
+
+  if (isPathInsideSlots(ownedRoot, startDir)) {
+    throw new DockoError(
+      `${startDir} is inside the managed slot tree of the workspace ${ownedRoot}. Run it against the workspace root instead: ${label} --root "${ownedRoot}"`,
+      'ROOT_INSIDE_SLOT',
+      1,
+      { provided_root: startDir, workspace_root: ownedRoot }
+    );
+  }
+
+  if (command[0] !== 'init') {
+    throw new DockoError(
+      `${startDir} is not a docko workspace; the nearest one is ${ownedRoot}. Installing here would scatter Claude Code assets outside it. Re-run with an explicit root: ${label} --root "${ownedRoot}"`,
+      'ROOT_NOT_WORKSPACE',
+      1,
+      { provided_root: startDir, workspace_root: ownedRoot }
+    );
+  }
 }
 
 function requiredOption(options: OptionMap, key: string): string {
@@ -629,6 +718,19 @@ function parsePositiveInt(raw: string | null, label: string): number | undefined
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     throw new DockoError(`--${label} must be a positive integer.`, 'USAGE_ERROR', 1, { option: label, value: raw });
+  }
+  return value;
+}
+
+// Durations that mean "cut off at now" accept 0; parsePositiveInt would reject it as a usage
+// error even though 0 is the natural way to ask for an immediate sweep.
+function parseNonNegativeInt(raw: string | null, label: string): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new DockoError(`--${label} must be a non-negative integer.`, 'USAGE_ERROR', 1, { option: label, value: raw });
   }
   return value;
 }
@@ -663,11 +765,10 @@ function buildSuggestedCommand(argv: string[], sessionId: string): string {
   return `docko ${args.map(quoteCliArgument).join(' ')}`;
 }
 
-function pickSuggestedSessionId(context: CliContext, details: Record<string, unknown>): string | null {
-  if (context.sessionEnv) {
-    return context.sessionEnv;
-  }
-
+// The env session id is never a useful suggestion here: resolution only reports AMBIGUOUS_SESSION
+// after the env id failed to match any active session, so re-running with it would fail the same
+// way. Suggest a session that actually exists.
+function pickSuggestedSessionId(details: Record<string, unknown>): string | null {
   if (typeof details.newest_session_id === 'string') {
     return details.newest_session_id;
   }
@@ -689,7 +790,7 @@ function withSessionRecovery(context: CliContext, error: unknown): unknown {
   }
 
   const details = error.details ?? {};
-  const sessionId = pickSuggestedSessionId(context, details);
+  const sessionId = pickSuggestedSessionId(details);
   if (!sessionId) {
     return error;
   }
@@ -2208,6 +2309,10 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
     // Rotation only ever considers auto-acquirable slots; a pinned slot is reachable by name.
     const rotatableSlots = slotResources.filter((resource) => !isAutoAcquireDisabled(resource));
     const freeSlots = rotatableSlots.filter((resource) => resource.status === 'free');
+    // A pinned slot is not busy, it is only out of rotation, so it is counted separately instead
+    // of being folded into the claimed total.
+    const claimedSlotCount = slotResources.filter((resource) => resource.status === 'claimed').length;
+    const pinnedSlotIds = slotResources.filter(isAutoAcquireDisabled).map((resource) => resource.resource_id);
     if (freeSlots.length > 0 || (preferredSlot && preferredSlot.status === 'free')) {
       const lastSlotId = status.workspace?.config?.scheduler?.last_slot_id?.[schedulerKey] ?? null;
       const rotatedFreeSlots = rotateFreeSlotsByCursor(rotatableSlots, freeSlots, lastSlotId);
@@ -2240,7 +2345,8 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
             availability: {
               total_slots: slotResources.length,
               free_slots_before: freeSlots.length,
-              claimed_slots_before: slotResources.length - freeSlots.length
+              claimed_slots_before: claimedSlotCount,
+              pinned_slot_count: pinnedSlotIds.length
             },
             clone: null,
             claim
@@ -2276,8 +2382,9 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
         {
           workspace_root: context.root,
           slot_count: slotResources.length,
-          busy_slot_count: slotResources.length,
-          pinned_slot_ids: slotResources.filter(isAutoAcquireDisabled).map((resource) => resource.resource_id),
+          busy_slot_count: claimedSlotCount,
+          pinned_slot_count: pinnedSlotIds.length,
+          pinned_slot_ids: pinnedSlotIds,
           next_steps: [
             `docko slot acquire --root "${context.root}" --session ${sessionId} --clone-when-busy`,
             `docko status --root "${context.root}" --brief --claimed`
@@ -2316,7 +2423,8 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
         availability: {
           total_slots: slotResources.length,
           free_slots_before: 0,
-          claimed_slots_before: slotResources.length
+          claimed_slots_before: claimedSlotCount,
+          pinned_slot_count: pinnedSlotIds.length
         },
         clone: {
           ...duplicated,
@@ -2855,12 +2963,13 @@ async function buildEnsureApplicationOptions(context: CliContext): Promise<Ensur
 }
 
 // Core owns the decision; the CLI forwards every field a runtime adapter needs to explain it.
-// Fields core does not populate yet are emitted as null so the launcher can stay one shape.
+// The slot path is resolved against the workspace root so a hook prints something a shell can cd
+// into, and application_id is what lets a deny message render a usable `--application` flag.
 function serializeAuthorization(
   authorization: AuthorizationResult,
   workspaceRootPath: string
 ): Record<string, unknown> {
-  const detail = authorization as AuthorizationResult & { slot_path?: string | null };
+  const slotPath = authorization.slot_path ? path.resolve(workspaceRootPath, authorization.slot_path) : null;
 
   return {
     allow: authorization.allowed,
@@ -2874,7 +2983,8 @@ function serializeAuthorization(
     expired_at: authorization.expired_at ?? null,
     claim_stale_after_ms: authorization.claim_stale_after_ms ?? null,
     previous_owner_session_id: authorization.previous_owner_session_id ?? null,
-    slot_path: detail.slot_path ?? null,
+    application_id: authorization.application_id ?? null,
+    slot_path: slotPath,
     workspace_root: workspaceRootPath
   };
 }
@@ -2894,15 +3004,17 @@ function buildSessionStartContext(sessionId: string, workspaceRootPath: string):
 }
 
 // `status` never fails on session ambiguity: the summary just omits `my_claims` when the caller
-// cannot be identified.
+// cannot be identified. An unverified env id is worse than none — it makes the summary claim a
+// session this workspace has never seen — so it goes through normal resolution, which only
+// honours the env id when it names an active session.
 async function resolveSessionIdQuietly(context: CliContext): Promise<string | null> {
-  const explicit = option(context.options, 'session') ?? context.sessionEnv;
+  const explicit = option(context.options, 'session');
   if (explicit) {
     return explicit;
   }
 
   try {
-    return await context.service.resolveSessionId(null, null);
+    return await context.service.resolveSessionId(null, context.sessionEnv);
   } catch {
     return null;
   }
@@ -2915,7 +3027,8 @@ async function buildStatusPayload(context: CliContext): Promise<StatusPayload> {
   );
   const applicationId = option(context.options, 'application');
   const sessionId = await resolveSessionIdQuietly(context);
-  // The summary always describes the whole workspace, even when the resource list is filtered.
+  // The summary describes exactly the resources this call selected: --resource/--id narrow the
+  // list core returns, and --application/--claimed narrow it again below.
   const summary = buildStatusSummary(status, context.root, sessionId);
 
   let resources = status.resources;
@@ -2952,13 +3065,11 @@ async function ensureResource(context: CliContext): Promise<Record<string, unkno
     return resource as unknown as Record<string, unknown>;
   }
 
-  // Report honestly when the running core build does not persist the flag yet, instead of
-  // letting the caller believe a slot was pinned out of rotation.
-  const persisted = (resource as RegistryResource & OptionalResourceFlags).auto_acquire ?? true;
+  // Core persists the flag but omits it from the document at its default, so the payload always
+  // spells the effective value out instead of leaving the caller to infer it.
   return {
     ...resource,
-    auto_acquire: persisted,
-    auto_acquire_persisted: persisted === autoAcquire
+    auto_acquire: (resource as RegistryResource & OptionalResourceFlags).auto_acquire ?? true
   };
 }
 
@@ -3172,11 +3283,11 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'session prune',
       async () => {
         const request: SessionPruneOptions = {
-          maxAgeMs: parsePositiveInt(option(context.options, 'max-age-ms'), 'max-age-ms'),
+          maxAgeMs: parseNonNegativeInt(option(context.options, 'max-age-ms'), 'max-age-ms'),
           dryRun: Boolean(context.options['dry-run']),
           deleteEndedOlderThanMs:
-            parsePositiveInt(option(context.options, 'retention-ms'), 'retention-ms') ??
-            parsePositiveInt(option(context.options, 'delete-ended-older-than-ms'), 'delete-ended-older-than-ms') ??
+            parseNonNegativeInt(option(context.options, 'retention-ms'), 'retention-ms') ??
+            parseNonNegativeInt(option(context.options, 'delete-ended-older-than-ms'), 'delete-ended-older-than-ms') ??
             DEFAULT_ENDED_MANIFEST_RETENTION_MS
         };
 
@@ -3311,18 +3422,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   let key = '';
 
   try {
-    context = await createContext(argv);
-    key = context.command.slice(0, 3).join(' ');
-
-    if (context.options.version) {
+    // Usage and version answer before any workspace resolution: `docko init --root <slot> --help`
+    // must print usage, not fail with ROOT_INSIDE_SLOT.
+    const parsed = parseArgs(argv);
+    if (parsed.options.version) {
       process.stdout.write(`${getVersion()}\n`);
       return;
     }
 
-    if (context.options.help || context.command[0] === 'help') {
-      printCommandHelp(context.command[0] === 'help' ? context.command.slice(1) : context.command);
+    if (parsed.options.help || parsed.command[0] === 'help') {
+      printCommandHelp(parsed.command[0] === 'help' ? parsed.command.slice(1) : parsed.command);
       return;
     }
+
+    context = await createContext(argv);
+    key = context.command.slice(0, 3).join(' ');
 
     if (!key) {
       printHelp();
@@ -3388,6 +3502,7 @@ export const __test__ = {
   rotateFreeSlotsByCursor,
   requiredOption,
   parsePositiveInt,
+  parseNonNegativeInt,
   parseEnum,
   extractHookFilePath,
   INJECTION_MARKERS,

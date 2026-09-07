@@ -572,21 +572,55 @@ test('an explicit --root inside a managed slot resolves up instead of failing', 
   assert.equal(acquired.resolved_root, root);
 });
 
-test('init still refuses an explicit --root inside a managed slot', async () => {
+test('scaffolding commands refuse to reach up into an owning workspace', async () => {
   const root = await makeWorkspace('docko-init-nowalkup-');
   await runCli(['init', '--root', root]);
   const nested = path.join(root, 'slots', 'app-alpha', 'child');
+  const sibling = path.join(root, 'subproject');
   await mkdir(nested, { recursive: true });
+  await mkdir(sibling, { recursive: true });
 
-  const result = await runCli(['init', '--root', '.'], { cwd: nested });
-  assert.equal(result.code, 1);
-  const payload = JSON.parse(result.stderr);
-  assert.equal(payload.error.code, 'ROOT_INSIDE_SLOT');
-  assert.equal(payload.error.workspace_root, root);
+  // Explicit --root inside a slot.
+  const explicitInit = await runCli(['init', '--root', '.'], { cwd: nested });
+  assert.equal(explicitInit.code, 1);
+  const explicitPayload = JSON.parse(explicitInit.stderr);
+  assert.equal(explicitPayload.error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(explicitPayload.error.workspace_root, root);
   // The message must carry absolute paths and a runnable command, not cwd-relative fragments.
-  assert.match(payload.error.message, /docko init --root "/);
-  assert.ok(payload.error.message.includes(root));
+  assert.match(explicitPayload.error.message, /docko init --root "/);
+  assert.ok(explicitPayload.error.message.includes(root));
   assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), false);
+
+  // A bare init inside a slot is the same mistake and gets the same refusal.
+  const bareInit = await runCli(['init'], { cwd: nested });
+  assert.equal(bareInit.code, 1);
+  assert.equal(JSON.parse(bareInit.stderr).error.code, 'ROOT_INSIDE_SLOT');
+  assert.equal(existsSync(path.join(nested, 'docko', 'registry.json')), false);
+
+  // install used to walk up and drop its assets in the parent workspace.
+  const installInSlot = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: nested });
+  assert.equal(installInSlot.code, 1);
+  assert.equal(JSON.parse(installInSlot.stderr).error.code, 'ROOT_INSIDE_SLOT');
+
+  const installInSibling = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: sibling });
+  assert.equal(installInSibling.code, 1);
+  const siblingPayload = JSON.parse(installInSibling.stderr).error;
+  assert.equal(siblingPayload.code, 'ROOT_NOT_WORKSPACE');
+  assert.equal(siblingPayload.provided_root, sibling);
+  assert.equal(siblingPayload.workspace_root, root);
+  assert.match(siblingPayload.message, /docko adapter claude-code install --root "/);
+  assert.equal(existsSync(path.join(sibling, '.claude-plugin')), false);
+  assert.equal(existsSync(path.join(root, '.claude-plugin')), false);
+
+  // A nested workspace outside slots/ is legitimate, so init still scaffolds there.
+  const nestedInit = await runCli(['init', '--root', '.', '--json'], { cwd: sibling });
+  assert.equal(nestedInit.code, 0, nestedInit.stderr);
+  assert.equal(existsSync(path.join(sibling, 'docko', 'registry.json')), true);
+
+  // ...and install works once that directory is a workspace of its own.
+  const installed = await runCli(['adapter', 'claude-code', 'install', '--root', '.'], { cwd: sibling });
+  assert.equal(installed.code, 0, installed.stderr);
+  assert.equal(parseStdout(installed).workspace_root, sibling);
 });
 
 test('CLI launcher delegates through the checked-in bin entrypoint', async () => {
@@ -905,7 +939,8 @@ test('brief output summarizes status, slot acquire, and session list', async () 
     availability: {
       total_slots: 2,
       free_slots_before: 2,
-      claimed_slots_before: 0
+      claimed_slots_before: 0,
+      pinned_slot_count: 0
     },
     clone: null
   });
@@ -1983,4 +2018,90 @@ test('per-command help documents the command that was asked about', async () => 
   const generic = await runCli(['--help']);
   assert.equal(generic.code, 0);
   assert.match(generic.stdout, /Run "docko <command> --help"/);
+});
+
+test('slot acquire counts pinned slots apart from claimed ones', async () => {
+  const root = await makeWorkspace('docko-acquire-pinned-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'worker']);
+  await runCli(['resource', 'ensure', '--root', root, '--resource', 'slot', '--id', 'app-beta', '--no-auto-acquire']);
+
+  const acquired = parseStdout(
+    await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'count check', '--brief'])
+  );
+  assert.equal(acquired.slot_id, 'app-alpha');
+  // app-beta is out of rotation, not busy: reporting it as claimed made the workspace look full.
+  assert.deepEqual(acquired.availability, {
+    total_slots: 2,
+    free_slots_before: 1,
+    claimed_slots_before: 0,
+    pinned_slot_count: 1
+  });
+
+  const busy = await runCli(['slot', 'acquire', '--root', root, '--session', 'worker', '--task', 'second', '--brief']);
+  assert.equal(busy.code, 2);
+  const error = JSON.parse(busy.stderr).error;
+  assert.equal(error.code, 'NO_FREE_SLOT');
+  assert.equal(error.slot_count, 2);
+  assert.equal(error.busy_slot_count, 1);
+  assert.equal(error.pinned_slot_count, 1);
+  assert.deepEqual(error.pinned_slot_ids, ['app-beta']);
+});
+
+test('status never reports a session id this workspace has never seen', async () => {
+  const root = await makeWorkspace('docko-status-envsession-');
+  await runCli(['init', '--root', root]);
+
+  const foreign = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], { env: { DOCKO_SESSION_ID: 'ses_from_another_repo' } })
+  );
+  assert.equal(foreign.summary.session_id, null);
+
+  // A real session in this workspace is still picked up from the environment.
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_real']);
+  const known = parseStdout(
+    await runCli(['status', '--root', root, '--brief'], { env: { DOCKO_SESSION_ID: 'ses_real' } })
+  );
+  assert.equal(known.summary.session_id, 'ses_real');
+});
+
+test('an unknown environment session id is never suggested as the ambiguity retry', async () => {
+  const root = await makeWorkspace('docko-ambiguous-envsession-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_a']);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_b']);
+
+  const claim = await runCli(['claim', '--root', root, '--resource', 'slot', '--id', 'app-alpha'], {
+    env: { DOCKO_SESSION_ID: 'ses_ghost' }
+  });
+  assert.equal(claim.code, 3);
+  const error = JSON.parse(claim.stderr).error;
+  assert.equal(error.code, 'AMBIGUOUS_SESSION');
+  // The env id is exactly the id that just failed to resolve, so it must not come back.
+  assert.equal(error.newest_session_id, 'ses_b');
+  assert.match(error.suggested_command, /--session ses_b$/);
+  assert.doesNotMatch(error.suggested_command, /ses_ghost/);
+});
+
+test('session prune accepts a zero retention window', async () => {
+  const root = await makeWorkspace('docko-prune-zero-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_done']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ses_done']);
+
+  const pruned = parseStdout(await runCli(['session', 'prune', '--root', root, '--retention-ms', '0']));
+  assert.equal(pruned.retention_ms, 0);
+  assert.ok(pruned.deleted_manifests >= 1);
+  assert.equal(existsSync(path.join(root, 'docko', 'sessions', 'ended', 'ses_done.json')), false);
+});
+
+test('session current refuses an ended session through the CLI', async () => {
+  const root = await makeWorkspace('docko-session-current-cli-');
+  await runCli(['init', '--root', root]);
+  await runCli(['session', 'start', '--root', root, '--runtime', 'shell', '--session', 'ses_done']);
+  await runCli(['session', 'end', '--root', root, '--session', 'ses_done']);
+
+  const current = await runCli(['session', 'current', '--root', root, '--session', 'ses_done']);
+  assert.equal(current.code, 4);
+  assert.equal(JSON.parse(current.stderr).error.code, 'SESSION_NOT_FOUND');
 });

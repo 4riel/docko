@@ -841,7 +841,7 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
   );
 
   // The hook launcher builds its deny message from this payload, so every field it can render
-  // must be present — as null when the core build does not populate it yet.
+  // must be present — as null when this decision does not carry it.
   const auth = cli.serializeAuthorization(
     {
       allowed: true,
@@ -864,6 +864,7 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
     expired_at: null,
     claim_stale_after_ms: null,
     previous_owner_session_id: null,
+    application_id: null,
     slot_path: null,
     workspace_root: '/workspace'
   });
@@ -879,14 +880,18 @@ test('CLI internals cover helper branches around parsing, path formatting, and s
       owner_branch: 'feat/x',
       owner_session_active: true,
       expired_at: null,
-      slot_path: '/workspace/slots/r1'
+      application_id: 'backend',
+      slot_path: 'slots/backend/web_2'
     },
     '/workspace'
   );
   assert.equal(detailedAuth.owner_task, 'ship it');
   assert.equal(detailedAuth.owner_branch, 'feat/x');
   assert.equal(detailedAuth.owner_session_active, true);
-  assert.equal(detailedAuth.slot_path, '/workspace/slots/r1');
+  // application_id feeds the launcher's --application flag; the slot path is made absolute so a
+  // hook can print something a shell can cd into.
+  assert.equal(detailedAuth.application_id, 'backend');
+  assert.equal(detailedAuth.slot_path, path.resolve('/workspace', 'slots/backend/web_2'));
 
   let stdout = '';
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -1777,11 +1782,22 @@ test('CLI renders a copy-pastable retry for an ambiguous session', async () => {
   );
   assert.equal(fromNewest.details.suggested_command, 'docko claim --resource slot --id main --session ses_newest');
 
+  // Resolution only reports AMBIGUOUS_SESSION once the env id failed to match an active session,
+  // so suggesting it back would just fail the same way.
   const fromEnv = cli.withSessionRecovery(
     { argv: ['claim', '--resource', 'slot', '--id', 'main'], sessionEnv: 'ses_env' },
     ambiguous
   );
-  assert.equal(fromEnv.details.suggested_command, 'docko claim --resource slot --id main --session ses_env');
+  assert.equal(fromEnv.details.suggested_command, 'docko claim --resource slot --id main --session ses_newest');
+
+  // Without newest_session_id the first listed active session is the fallback, never the env id.
+  const listOnly = cli.withSessionRecovery(
+    { argv: ['status'], sessionEnv: 'ses_env' },
+    new DockoError('Multiple active sessions found.', 'AMBIGUOUS_SESSION', 3, {
+      active_sessions: [{ session_id: 'ses_first' }, { session_id: 'ses_second' }]
+    })
+  );
+  assert.equal(listOnly.details.suggested_command, 'docko status --session ses_first');
 
   // Any other error passes through untouched.
   const other = new DockoError('nope', 'NO_ACTIVE_SESSION', 4);
@@ -1947,4 +1963,113 @@ test('CLI SessionStart context carries the session id, the root, and runnable co
   assert.match(context, /docko slot acquire --root "\/w" --session ses_x --branch <branch> --task "<task>" --brief/);
   assert.match(context, /docko claim --root "\/w" --session ses_x --resource slot --id <slot>/);
   assert.match(context, /docko release --root "\/w" --session ses_x --resource slot --id <slot>/);
+});
+
+test('scaffolding commands never operate on an ancestor workspace', async () => {
+  const cli = await loadCliInternals();
+  const DockoError = await loadDockoError();
+  const root = await makeWorkspace('docko-scaffold-root-');
+  await runCli(['init', '--root', root]);
+
+  const inSlot = path.join(root, 'slots', 'app-alpha', 'child');
+  const sibling = path.join(root, 'subproject');
+  await mkdir(inSlot, { recursive: true });
+  await mkdir(sibling, { recursive: true });
+
+  const expectCode = (command, options, code) => {
+    assert.throws(
+      () => cli.resolveWorkspaceRoot(command, options),
+      (error) => error instanceof DockoError && error.code === code && error.details.workspace_root === root,
+      `${command.join(' ')} ${JSON.stringify(options)}`
+    );
+  };
+
+  // Inside slots/ both scaffolding commands refuse an explicit --root.
+  for (const command of [['init'], ['adapter', 'claude-code', 'install']]) {
+    expectCode(command, { root: inSlot }, 'ROOT_INSIDE_SLOT');
+  }
+
+  // Outside slots/ a nested workspace is legitimate, so only install refuses.
+  assert.equal(cli.resolveWorkspaceRoot(['init'], { root: sibling }), sibling);
+  expectCode(['adapter', 'claude-code', 'install'], { root: sibling }, 'ROOT_NOT_WORKSPACE');
+
+  // Every other command still resolves up to the owning workspace.
+  assert.equal(cli.resolveWorkspaceRoot(['status'], { root: inSlot }), root);
+  assert.equal(cli.resolveWorkspaceRoot(['adapter', 'claude-code', 'doctor'], { root: inSlot }), root);
+
+  // ...and a bare command with no --root is judged by its cwd, not waved through.
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(inSlot);
+    for (const command of [['init'], ['adapter', 'claude-code', 'install']]) {
+      expectCode(command, {}, 'ROOT_INSIDE_SLOT');
+    }
+    assert.equal(cli.resolveWorkspaceRoot(['status'], {}), root);
+
+    process.chdir(sibling);
+    assert.equal(cli.resolveWorkspaceRoot(['init'], {}), sibling);
+    expectCode(['adapter', 'claude-code', 'install'], {}, 'ROOT_NOT_WORKSPACE');
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test('CLI answers --help before it resolves a workspace root', async () => {
+  const root = await makeWorkspace('docko-help-inslot-');
+  await runCli(['init', '--root', root]);
+  const inSlot = path.join(root, 'slots', 'app-alpha');
+
+  // Without the early exit this fails with ROOT_INSIDE_SLOT instead of printing usage.
+  const help = await runCli(['init', '--root', inSlot, '--help']);
+  assert.equal(help.code, 0);
+  assert.equal(help.stderr, '');
+  assert.match(help.stdout, /docko init — initialize a workspace/);
+
+  const installHelp = await runCli(['adapter', 'claude-code', 'install', '--root', inSlot, '--help']);
+  assert.equal(installHelp.code, 0);
+  assert.match(installHelp.stdout, /ROOT_NOT_WORKSPACE/);
+});
+
+test('namespace help lists that namespace instead of the whole CLI', async () => {
+  const slot = await runCli(['slot', '--help']);
+  assert.equal(slot.code, 0);
+  assert.match(slot.stdout, /docko slot — slot commands/);
+  assert.match(slot.stdout, /slot acquire/);
+  assert.doesNotMatch(slot.stdout, /Global options:/);
+
+  const session = await runCli(['session', '--help']);
+  assert.match(session.stdout, /docko session — session commands/);
+  assert.match(session.stdout, /session prune/);
+
+  const adapter = await runCli(['adapter', '--help']);
+  assert.match(adapter.stdout, /docko adapter — runtime adapter commands/);
+
+  const claude = await runCli(['adapter', 'claude-code', '--help']);
+  assert.match(claude.stdout, /adapter claude-code doctor/);
+
+  // A leaf command still gets its own page.
+  const acquire = await runCli(['slot', 'acquire', '--help']);
+  assert.match(acquire.stdout, /docko slot acquire/);
+});
+
+test('CLI duration options accept zero where zero means now', async () => {
+  const cli = await loadCliInternals();
+  const DockoError = await loadDockoError();
+
+  assert.equal(cli.parseNonNegativeInt('0', 'retention-ms'), 0);
+  assert.equal(cli.parseNonNegativeInt('5000', 'retention-ms'), 5000);
+  assert.equal(cli.parseNonNegativeInt(null, 'retention-ms'), undefined);
+  for (const bad of ['-1', '1.5', 'soon']) {
+    assert.throws(
+      () => cli.parseNonNegativeInt(bad, 'retention-ms'),
+      (error) => error instanceof DockoError && error.code === 'USAGE_ERROR',
+      bad
+    );
+  }
+
+  // The positive parser keeps rejecting 0 for options where it is meaningless.
+  assert.throws(
+    () => cli.parsePositiveInt('0', 'limit'),
+    (error) => error instanceof DockoError && error.code === 'USAGE_ERROR'
+  );
 });
