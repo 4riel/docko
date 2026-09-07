@@ -112,6 +112,9 @@ export interface StatusResult {
   workspace: WorkspaceDescriptor;
   applications: WorkspaceApplication[];
   resources: RegistryResource[];
+  // Workspace-relative directories under slots/ that discovery skipped because their name is not
+  // a usable resource id. They can never be claimed until they are renamed.
+  ignored_slot_dirs: string[];
   janitor: StatusJanitorResult;
 }
 
@@ -219,6 +222,12 @@ export interface AuthorizationResult {
   // `slot_path` stays workspace-relative here; the CLI resolves it against the workspace root.
   application_id?: string | null;
   slot_path?: string | null;
+  // Set when the write targets a slot directory whose name is not a usable resource id, so the
+  // adapter can tell the agent to rename the directory instead of trying to claim it.
+  invalid_slot_dir?: string | null;
+  // Whether the acting session is registered and active. `null` on the unlocked fast path, which
+  // answers paths outside the slots tree without reading session state at all.
+  session_known?: boolean | null;
 }
 
 export type LogOutcome = 'ok' | 'error';

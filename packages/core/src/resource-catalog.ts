@@ -29,14 +29,16 @@ export class ResourceCatalog {
   async ensure(registry: RegistryDocument, options: EnsureResourceOptions): Promise<RegistryResource> {
     const existing = this.registryScribe.getResource(registry, options.resourceType, options.resourceId);
     if (existing) {
-      if (options.path !== undefined && existing.status === 'claimed' && options.path !== existing.path) {
+      // `null` means "the caller passed no --path", not "clear the path". Treating it as a value
+      // rejected `--no-auto-acquire` on a claimed slot and wiped the path of every other resource.
+      if (options.path != null && existing.status === 'claimed' && options.path !== existing.path) {
         throw new DockoError('Cannot modify the path of a claimed resource.', 'RESOURCE_MUTATION_DENIED', 2, {
           resource_type: options.resourceType,
           resource_id: options.resourceId
         });
       }
 
-      if (options.path !== undefined && existing.resource_type !== 'slot') {
+      if (options.path != null && existing.resource_type !== 'slot') {
         existing.path = options.path;
       }
       applyAutoAcquire(existing, options.autoAcquire);

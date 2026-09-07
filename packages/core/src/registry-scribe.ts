@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { DockoError } from './errors.js';
+import { DockoError, isSafeId } from './errors.js';
 import {
   atomicWriteJson,
   atomicWriteText,
@@ -12,7 +12,7 @@ import {
 } from './fs-utils.js';
 import { MirrorSmith } from './mirror-smith.js';
 import { getPaths, type DockoPaths } from './paths.js';
-import { SCHEMA_VERSION } from './constants.js';
+import { SCHEMA_VERSION, SLOTS_DIR } from './constants.js';
 import type { RegistryDocument, RegistryResource, ResourceType, StatusResult, WorkspaceApplication } from './types.js';
 
 function qualifySlotResourceId(applicationId: string | null | undefined, slotName: string): string {
@@ -28,6 +28,7 @@ export class RegistryScribe {
   private readonly mirrorSmith = new MirrorSmith();
   private readonly onMirrorError?: (error: unknown) => void;
   private tempArtifactsSwept = false;
+  private ignoredSlotDirs: string[] = [];
 
   constructor(workspaceRoot: string, options: { onMirrorError?: (error: unknown) => void } = {}) {
     this.paths = getPaths(workspaceRoot);
@@ -70,7 +71,9 @@ export class RegistryScribe {
 
   /**
    * Reads the registry without creating anything and without the mutation lock.
-   * Used by read-only fast paths that must never write; returns null when there is no workspace.
+   * Used by read-only fast paths: it never creates a workspace and never writes registry.json or
+   * its mirror. It does reclaim abandoned temp artifacts, which is the one write the read path
+   * owns. Returns null when there is no readable registry.
    */
   async readRegistryUnlocked(): Promise<RegistryDocument | null> {
     // Read-only commands are the common case, so the sweep has to happen here too: a workspace
@@ -151,7 +154,8 @@ export class RegistryScribe {
       schema_version: registry.schema_version,
       workspace: registry.workspace,
       applications: registry.applications,
-      resources: this.filterResources(registry, resourceType, resourceId)
+      resources: this.filterResources(registry, resourceType, resourceId),
+      ignored_slot_dirs: this.getIgnoredSlotDirs()
     };
   }
 
@@ -289,8 +293,14 @@ export class RegistryScribe {
     return next;
   }
 
+  /** Directories the last discovery pass skipped because their name is not a usable resource id. */
+  getIgnoredSlotDirs(): string[] {
+    return [...this.ignoredSlotDirs];
+  }
+
   async discoverSlotResources(registry: RegistryDocument): Promise<RegistryDocument> {
     const slotDirs = await listDirectories(this.paths.slotsDir);
+    const ignoredSlotDirs: string[] = [];
     const applicationIds = new Set((registry.applications ?? []).map((application) => application.application_id));
     // Free slots are dropped and re-created below; their release history and pins must survive that.
     const lastClaims = new Map(
@@ -312,11 +322,24 @@ export class RegistryScribe {
     );
 
     for (const slotId of slotDirs) {
+      // A directory whose name is not a usable id could be discovered but never claimed
+      // (`claim` rejects it with INVALID_ID), which left writes into it denied forever. Skip it
+      // and report it so the workspace owner knows to rename the directory.
+      if (!isSafeId(slotId)) {
+        ignoredSlotDirs.push(`${SLOTS_DIR}/${slotId}`);
+        continue;
+      }
+
       if (applicationIds.has(slotId)) {
         const applicationSlots = await listDirectories(path.join(this.paths.slotsDir, slotId));
         for (const slotName of applicationSlots) {
+          if (!isSafeId(slotName)) {
+            ignoredSlotDirs.push(`${SLOTS_DIR}/${slotId}/${slotName}`);
+            continue;
+          }
+
           const resourceId = qualifySlotResourceId(slotId, slotName);
-          const resource = this.upsertResource(registry, 'slot', resourceId, `slots/${slotId}/${slotName}`, {
+          const resource = this.upsertResource(registry, 'slot', resourceId, `${SLOTS_DIR}/${slotId}/${slotName}`, {
             application_id: slotId,
             slot_name: slotName
           });
@@ -325,12 +348,14 @@ export class RegistryScribe {
         continue;
       }
 
-      const resource = this.upsertResource(registry, 'slot', slotId, `slots/${slotId}`, {
+      const resource = this.upsertResource(registry, 'slot', slotId, `${SLOTS_DIR}/${slotId}`, {
         application_id: null,
         slot_name: slotId
       });
       this.restoreSlotMetadata(resource, lastClaims, pinnedSlotIds);
     }
+
+    this.ignoredSlotDirs = ignoredSlotDirs;
     return registry;
   }
 

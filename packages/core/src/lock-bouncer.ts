@@ -1,5 +1,7 @@
 import path from 'node:path';
+import { SLOTS_DIR } from './constants.js';
 import { DockoError } from './errors.js';
+import { isPathInside } from './paths.js';
 import type {
   AuthorizationReason,
   AuthorizationResult,
@@ -25,6 +27,11 @@ export interface AuthorizeFileWriteOptions {
   // Active session manifests, when the caller already loaded them. Without this map the
   // authorizer cannot tell whether the owner is still alive and reports null.
   sessions?: ReadonlyMap<string, SessionManifest>;
+  // Workspace-relative slot directories discovery had to skip because their name is not a usable
+  // resource id. They own no registry resource, so without this list they would look unmanaged.
+  ignoredSlotDirs?: readonly string[];
+  // Whether the acting session exists and is still active. `null` when the caller did not look.
+  sessionKnown?: boolean | null;
 }
 
 function toAbsolutePath(workspaceRoot: string, targetPath: string): string {
@@ -36,12 +43,7 @@ function matchesManagedPath(workspaceRoot: string, resource: RegistryResource, f
     return false;
   }
 
-  const normalizedResourcePath = toAbsolutePath(workspaceRoot, resource.path);
-  const normalizedFilePath = toAbsolutePath(workspaceRoot, filePath);
-  return (
-    normalizedFilePath === normalizedResourcePath ||
-    normalizedFilePath.startsWith(`${normalizedResourcePath}${path.sep}`)
-  );
+  return isPathInside(toAbsolutePath(workspaceRoot, resource.path), toAbsolutePath(workspaceRoot, filePath));
 }
 
 export class LockBouncer {
@@ -90,9 +92,7 @@ export class LockBouncer {
    * authorization path rather than an unlocked registry snapshot.
    */
   isInsideSlotsTree(filePath: string): boolean {
-    const slotsDir = path.resolve(this.workspaceRoot, 'slots');
-    const absolute = toAbsolutePath(this.workspaceRoot, filePath);
-    return absolute === slotsDir || absolute.startsWith(`${slotsDir}${path.sep}`);
+    return isPathInside(path.resolve(this.workspaceRoot, SLOTS_DIR), toAbsolutePath(this.workspaceRoot, filePath));
   }
 
   findManagedSlot(registry: RegistryDocument, filePath: string): RegistryResource | null {
@@ -108,6 +108,13 @@ export class LockBouncer {
     const slotResource = this.findManagedSlot(registry, filePath);
 
     if (!slotResource) {
+      // A slot directory whose name is not a usable id owns no resource, but it is still part of
+      // the managed tree: answering `path-not-managed` there would make it writable by anyone.
+      const ignoredSlotDir = this.findIgnoredSlotDir(filePath, options.ignoredSlotDirs);
+      if (ignoredSlotDir) {
+        return this.buildResult(false, 'slot-not-claimed', sessionId, null, null, options, ignoredSlotDir);
+      }
+
       return this.buildResult(true, 'path-not-managed', sessionId, null, null, options);
     }
 
@@ -120,13 +127,19 @@ export class LockBouncer {
       return this.buildResult(false, 'slot-not-claimed', sessionId, slotResource, null, options);
     }
 
-    if (slotResource.claim?.owner_session_id === sessionId) {
+    // A session docko does not know owns nothing, whatever the registry says its id claimed.
+    // Otherwise deleting a manifest, or spoofing an owner's id, would hand over its authority.
+    const sessionCanOwn = options.sessionKnown !== false;
+
+    if (sessionCanOwn && slotResource.claim?.owner_session_id === sessionId) {
       return this.buildResult(true, 'owner', sessionId, slotResource, sessionId, options);
     }
 
-    const delegated = (slotResource.delegations ?? []).some(
-      (delegation) => delegation.child_session_id === sessionId && delegation.scope === 'write'
-    );
+    const delegated =
+      sessionCanOwn &&
+      (slotResource.delegations ?? []).some(
+        (delegation) => delegation.child_session_id === sessionId && delegation.scope === 'write'
+      );
     if (delegated) {
       return this.buildResult(
         true,
@@ -148,13 +161,22 @@ export class LockBouncer {
     );
   }
 
+  private findIgnoredSlotDir(filePath: string, ignoredSlotDirs: readonly string[] | undefined): string | null {
+    const absolute = toAbsolutePath(this.workspaceRoot, filePath);
+    return (
+      (ignoredSlotDirs ?? []).find((ignored) => isPathInside(toAbsolutePath(this.workspaceRoot, ignored), absolute)) ??
+      null
+    );
+  }
+
   private buildResult(
     allowed: boolean,
     reason: AuthorizationReason,
     sessionId: string,
     resource: RegistryResource | null,
     ownerSessionId: string | null,
-    options: AuthorizeFileWriteOptions
+    options: AuthorizeFileWriteOptions,
+    invalidSlotDir: string | null = null
   ): AuthorizationResult {
     const claim = resource?.claim ?? null;
     const lastClaim = resource?.last_claim ?? null;
@@ -173,7 +195,9 @@ export class LockBouncer {
       claim_stale_after_ms: claim?.stale_after_ms ?? lastClaim?.stale_after_ms ?? null,
       previous_owner_session_id: ownerSessionId ? null : (lastClaim?.owner_session_id ?? null),
       application_id: resource?.application_id ?? null,
-      slot_path: resource?.path ?? null
+      slot_path: resource?.path ?? null,
+      invalid_slot_dir: invalidSlotDir,
+      session_known: options.sessionKnown ?? null
     };
   }
 

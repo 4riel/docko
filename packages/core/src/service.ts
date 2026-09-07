@@ -579,13 +579,20 @@ export class DockoService {
     return this.withLoggedOperation(
       'authorize-file-write',
       async () => {
-        await this.requireActiveSession(sessionId);
+        // An unregistered or ended session is not an error here. The hook still has to get an
+        // answer, and the honest one is a session that owns nothing: throwing SESSION_NOT_FOUND
+        // made the launcher fail open and allowed the write it was meant to block.
+        const session = await this.sessionSherpa.get(sessionId);
+        const sessionKnown = Boolean(session && !session.ended_at);
+
         return this.mutateRegistry(async (registry, janitor) => {
           const sessions = new Map(janitor.active_sessions.map((session) => [session.session_id, session]));
           const authorization = this.lockBouncer.authorizeFileWrite(registry, sessionId, relativeFilePath, {
-            sessions
+            sessions,
+            sessionKnown,
+            ignoredSlotDirs: this.registryScribe.getIgnoredSlotDirs()
           });
-          if (authorization.allowed && authorization.resource_id) {
+          if (sessionKnown && authorization.allowed && authorization.resource_id) {
             await this.refreshClaimLiveness(registry, authorization, sessionId);
           }
           return authorization;
@@ -714,6 +721,9 @@ export class DockoService {
     return this.withMutationLock(async () => {
       const { registry, serialized, janitor } = await this.loadRegistryForMutation(options);
       const result = await operation(registry, janitor);
+      // A long operation can outlive the stale window on a machine that was suspended mid-run.
+      // Re-checking here turns "two processes wrote the registry" into a retriable error.
+      await this.mutationGate.assertStillHeld();
       await this.registryScribe.writeRegistryIfChanged(registry, serialized, {
         forceMirror: options.forceMirror
       });
