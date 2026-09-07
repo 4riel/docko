@@ -19,8 +19,10 @@ All tests execute against built `dist/` output. The package scripts handle that 
 - `tests/core.services.test.mjs`: service-layer coverage for registry validation, stale recovery, logs, mirror rendering, and resource-catalog defaults
 - `tests/docko.e2e.test.mjs`: end-to-end CLI flows for init, claims, release, delegation, stale recovery, logs, and authorization
 - `tests/cli.unit.test.mjs`: CLI parser and interactive-init coverage, including repeated flags, prompt flows, payload fallbacks, and install edge cases
-- `tests/claude-code-adapter.test.mjs`: Claude adapter settings, installer behavior, settings merge, and real hook command execution
-- `tests/helpers/cli-test-helpers.mjs`: shared child-process and workspace helpers used by the CLI, adapter, and e2e suites
+- `tests/claude-code-adapter.test.mjs`: Claude adapter settings, installer behavior (including launcher refresh on version drift), settings merge, doctor diagnostics, and real hook command execution
+- `tests/claude-plugin.test.mjs`: distributable plugin bundle — manifests, marketplace entry, hook shapes and timeouts, launcher version header, CLAUDE_ENV_FILE export, per-reason deny messages, and shipped command/skill guidance
+- `tests/core.persistence.test.mjs`: atomic-write retries, ended-manifest relocation and retention, and lock ownership under contention
+- `tests/helpers/cli-test-helpers.mjs`: shared child-process and workspace helpers used by the CLI, adapter, and e2e suites. They strip ambient `DOCKO_SESSION_ID`/`CLAUDE_CODE_SESSION_ID`/`DOCKO_ROOT` so a suite run inside an agent session cannot inherit that session
 
 Coverage is gathered from built package outputs under `packages/*/dist/*.js` so the numbers reflect the shipped CLI, core, and adapter surfaces rather than test-only source paths.
 Package-install coverage runs from fresh temp directories outside the monorepo so npm does not inherit parent workspace context during tarball validation.

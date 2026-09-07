@@ -2,24 +2,22 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-start",
+            "timeout": 60
           }
         ]
       }
     ],
     "SessionEnd": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" session-end",
+            "timeout": 15
           }
         ]
       }
@@ -30,20 +28,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" pre-tool-use",
+            "timeout": 30
           }
         ]
       }
     ],
     "SubagentStart": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node \".claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
-            "timeout": 10
+            "command": "node \"/abs/path/to/workspace/.claude-plugin/docko/scripts/docko-claude-hook.mjs\" subagent-start",
+            "timeout": 30
           }
         ]
       }

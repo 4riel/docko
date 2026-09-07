@@ -39,10 +39,12 @@ docko init --root .
 
 The plugin ships the hooks, the `/dock-*` commands, and the `workspace-orchestration` skill — nothing is copied into your project. Hooks no-op in projects without a `docko/` workspace, so the plugin can stay enabled globally. If `docko` is not on `PATH`, the hooks fall back to `npx docko-workspace@alpha` automatically. From there:
 
-- **SessionStart** opens a docko session automatically.
-- **PreToolUse** blocks `Edit` / `Write` into slots the session does not own.
+- **SessionStart** opens a docko session automatically and exports `DOCKO_SESSION_ID` into the session's shell, so the commands Claude runs address the right session.
+- **PreToolUse** blocks `Edit` / `Write` into slots the session does not own, and the denial names the slot, the reason, and the one command that fixes it.
 - **SubagentStart** hands a delegated teammate inherited access to the parent's slot.
 - **SessionEnd** releases claims for you.
+
+Something misbehaving? `/dock-doctor` (or `docko adapter claude-code doctor`) reports launcher drift, duplicate hook registrations, and how `docko` resolves.
 
 You work in Claude Code normally. Docko commands run in the background.
 

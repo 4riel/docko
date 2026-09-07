@@ -96,7 +96,7 @@ docko init --root ./workspace --claude --codex --inject-claude --inject-codex
 - every run bootstraps `docko/registry.json`, `docko/registry.md`, `docko/sessions/`, and `docko/logs/`
 - `--slot <id>` is repeatable if you want named starter slots instead of the default `main`
 - `--slot-stale-after-ms <n>` stores the workspace default at `workspace.config.janitor.slot_stale_after_ms`
-- `--session-stale-after-ms <n>` stores the session stale window at `workspace.config.janitor.session_stale_after_ms` (default `86400000`)
+- `--session-stale-after-ms <n>` stores the session stale window at `workspace.config.janitor.session_stale_after_ms` (default `28800000`, 8 hours)
 - `--clone-source <path>` with `--clone-slot <id>` duplicates one explicit repo or clone into one managed slot during init
 
 Check the result:
