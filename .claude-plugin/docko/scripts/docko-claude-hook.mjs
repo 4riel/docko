@@ -14,7 +14,7 @@
 // failure we warn on stderr and exit 0 so the user's session keeps working.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const HOOK_EVENTS = {
@@ -129,14 +129,33 @@ function exportSessionEnv(env) {
   }
 
   try {
-    appendFileSync(envFile, `${lines.join('\n')}\n`, 'utf8');
+    // Another hook may have left the file without a trailing newline; appending straight onto it
+    // would fuse its last variable and our first one into a single unusable line.
+    appendFileSync(envFile, `${envFileNeedsNewline(envFile) ? '\n' : ''}${lines.join('\n')}\n`, 'utf8');
   } catch (error) {
     process.stderr.write(`docko hook: could not write CLAUDE_ENV_FILE: ${error.message}\n`);
   }
 }
 
+function envFileNeedsNewline(envFile) {
+  try {
+    const existing = readFileSync(envFile, 'utf8');
+    return existing.length > 0 && !existing.endsWith('\n');
+  } catch {
+    // Missing or unreadable: appendFileSync creates it, and there is nothing to run into.
+    return false;
+  }
+}
+
+// Stale windows are configurable down to a couple of seconds, and rounding those to "0m" told a
+// blocked agent nothing. Seconds below a minute, minutes below an hour, hours above.
 function formatDuration(milliseconds) {
-  const minutes = Math.round(milliseconds / 60000);
+  const seconds = Math.round(milliseconds / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.round(seconds / 60);
   if (minutes < 60) {
     return `${minutes}m`;
   }

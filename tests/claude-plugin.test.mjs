@@ -235,6 +235,33 @@ test('hook launcher renders one recovery command per deny reason', async () => {
       ]
     },
     {
+      // application_id is emitted by the CLI, so the acquire line must carry --application.
+      name: 'slot-not-claimed-with-application',
+      payload: {
+        allow: false,
+        reason: 'slot-not-claimed',
+        session_id: 'ses_me',
+        resource_id: 'backend.web_2',
+        application_id: 'backend',
+        workspace_root: workspace
+      },
+      expectations: [/docko slot acquire .*--application backend --prefer backend\.web_2 /]
+    },
+    {
+      // A short stale window used to render as "0m", which told a blocked agent nothing.
+      name: 'claim-expired-seconds',
+      payload: {
+        allow: false,
+        reason: 'claim-expired',
+        session_id: 'ses_me',
+        resource_id: 'backend.web_2',
+        owner_session_id: 'ses_me',
+        claim_stale_after_ms: 3000,
+        workspace_root: workspace
+      },
+      expectations: [/\(no heartbeat for 3s\)/]
+    },
+    {
       name: 'unrelated-session',
       payload: {
         allow: false,
@@ -338,4 +365,39 @@ test("this repository's own Claude install matches the bundle it ships", async (
   const settings = await readFile(path.join(repoRoot, '.claude', 'settings.docko.json'), 'utf8');
   assert.match(settings, /\$CLAUDE_PROJECT_DIR/);
   assert.doesNotMatch(settings, /[A-Za-z]:\\\\|\/home\/|\/Users\//);
+});
+
+test('hook launcher never fuses its exports onto an unterminated CLAUDE_ENV_FILE line', async () => {
+  const workspace = await makeWorkspace('docko-plugin-envfile-nonl-');
+  const envFile = path.join(workspace, 'claude-env');
+  // Another hook left the file without a trailing newline.
+  await writeFile(envFile, 'OTHER_HOOK=1', 'utf8');
+  await writeFile(path.join(workspace, 'docko', 'registry.json'), '{}\n', 'utf8');
+
+  const stub = await writeStubDocko(workspace, 'session-start-nonl', {
+    additionalContext: 'ctx',
+    env: { DOCKO_SESSION_ID: 'ses_nonl' }
+  });
+
+  const result = await runLauncher('session-start', {
+    cwd: workspace,
+    env: { DOCKO_BIN: stub, CLAUDE_PROJECT_DIR: workspace, CLAUDE_ENV_FILE: envFile },
+    input: JSON.stringify({ session_id: 'ses_nonl', hook_event_name: 'SessionStart', cwd: workspace })
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  const exported = await readFile(envFile, 'utf8');
+  assert.match(exported, /^OTHER_HOOK=1$/m);
+  assert.match(exported, /^DOCKO_SESSION_ID=ses_nonl$/m);
+  assert.doesNotMatch(exported, /OTHER_HOOK=1DOCKO_SESSION_ID/);
+});
+
+test("this repository's own plugin manifest tracks the package version", async () => {
+  // `scripts/bump-version.mjs` stamps this copy too; without the guard the dogfood install drifts
+  // a release behind and `docko adapter claude-code doctor` reports drift in docko's own repo.
+  const installed = await readJson(repoRoot, '.claude-plugin', 'docko', 'plugin.json');
+  const adapterPackage = await readJson(repoRoot, 'packages', 'adapters', 'claude-code', 'package.json');
+
+  assert.equal(installed.name, 'docko');
+  assert.equal(installed.version, adapterPackage.version);
 });

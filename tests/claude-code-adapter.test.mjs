@@ -300,20 +300,45 @@ test('Claude adapter install throws a DockoError for invalid existing settings J
   );
 });
 
-test('Claude adapter install reports skipped files when local managed files diverge without force', async () => {
+test('Claude adapter install always refreshes generated files and preserves edited ones', async () => {
   const { installClaudeCodeAdapter } = await loadAdapterModule();
   const root = await makeWorkspace();
-  await installClaudeCodeAdapter({ workspaceRoot: root, writeSettingsLocal: true });
+  const first = await installClaudeCodeAdapter({ workspaceRoot: root, writeSettingsLocal: true });
 
-  const pluginFile = path.join(root, '.claude-plugin', 'docko', 'plugin.json');
-  const generatedSettings = path.join(root, '.claude', 'settings.docko.json');
-  await writeFile(pluginFile, '{ "local": true }\n', 'utf8');
-  await writeFile(generatedSettings, '{ "local": true }\n', 'utf8');
+  const generated = [
+    path.join(root, '.claude-plugin', 'docko', 'plugin.json'),
+    path.join(root, '.claude-plugin', 'docko', 'hooks', 'hooks.json'),
+    path.join(root, '.claude', 'settings.docko.json')
+  ];
+  const command = path.join(root, '.claude', 'commands', 'dock-status.md');
+  assert.ok(first.written_files.includes(generated[0]));
 
-  const result = await installClaudeCodeAdapter({ workspaceRoot: root });
+  const originals = new Map();
+  for (const file of generated) {
+    originals.set(file, await readFile(file, 'utf8'));
+    await writeFile(file, '{ "local": true }\n', 'utf8');
+  }
+  await writeFile(command, 'local edit\n', 'utf8');
 
-  assert.ok(result.skipped_files.includes(pluginFile));
-  assert.ok(result.skipped_files.includes(generatedSettings));
+  const second = await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  // Generated hook config is docko's machine state, so it comes back on every install...
+  for (const file of generated) {
+    assert.ok(second.written_files.includes(file), file);
+    assert.equal(second.skipped_files.includes(file), false, file);
+    assert.equal(await readFile(file, 'utf8'), originals.get(file), file);
+  }
+
+  // ...while a hand-edited command stays a user asset until --force.
+  assert.ok(second.skipped_files.includes(command));
+  assert.equal(await readFile(command, 'utf8'), 'local edit\n');
+
+  // Rewriting identical content still reports unchanged, so written_files stays honest.
+  const third = await installClaudeCodeAdapter({ workspaceRoot: root });
+  for (const file of generated) {
+    assert.ok(third.unchanged_files.includes(file), file);
+    assert.equal(third.written_files.includes(file), false, file);
+  }
 });
 
 test('Claude adapter install applies executable bits on non-Windows hook scripts', async () => {
@@ -532,4 +557,64 @@ test('doctor is reachable from the CLI', async () => {
   assert.equal(report.workspace_root, root);
   assert.equal(report.launcher.up_to_date, true);
   assert.equal(Array.isArray(report.issues), true);
+});
+
+test('doctor reports plugin manifest drift in the repo-local install', async () => {
+  const { doctorClaudeCodeAdapter, installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  const healthy = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { DOCKO_BIN: 'docko' } });
+  assert.equal(healthy.plugin_manifest.exists, true);
+  assert.equal(healthy.plugin_manifest.up_to_date, true);
+
+  const manifestPath = path.join(root, '.claude-plugin', 'docko', 'plugin.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  await writeFile(manifestPath, `${JSON.stringify({ ...manifest, version: '0.0.1' }, null, 2)}\n`, 'utf8');
+
+  const drifted = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { DOCKO_BIN: 'docko' } });
+  assert.equal(drifted.plugin_manifest.version, '0.0.1');
+  assert.equal(drifted.plugin_manifest.up_to_date, false);
+  const issue = drifted.issues.find((entry) => entry.code === 'PLUGIN_MANIFEST_OUTDATED');
+  assert.ok(issue);
+  assert.match(issue.message, /docko adapter claude-code install/);
+
+  // An install brings the generated manifest back without --force.
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+  const repaired = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv: { DOCKO_BIN: 'docko' } });
+  assert.equal(repaired.plugin_manifest.up_to_date, true);
+});
+
+test('doctor --fix collapses duplicate registrations and reports the post-fix state', async () => {
+  const { doctorClaudeCodeAdapter, installClaudeCodeAdapter } = await loadAdapterModule();
+  const root = await makeWorkspace();
+  await installClaudeCodeAdapter({ workspaceRoot: root });
+
+  const launcher = path.join(root, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs');
+  const entry = (subcommand) => ({
+    hooks: [{ type: 'command', command: `node "${launcher}" ${subcommand}`, timeout: 60 }]
+  });
+  const settingsPath = path.join(root, '.claude', 'settings.json');
+  await writeFile(
+    settingsPath,
+    `${JSON.stringify({ hooks: { SessionStart: [entry('session-start'), entry('session-start')] } }, null, 2)}\n`,
+    'utf8'
+  );
+
+  const sessionEnv = { DOCKO_BIN: 'docko', DOCKO_SESSION_ID: 'ses_x' };
+  const diagnosed = await doctorClaudeCodeAdapter({ workspaceRoot: root, sessionEnv });
+  const duplicate = diagnosed.issues.find((issue) => issue.code === 'DUPLICATE_HOOK_REGISTRATION');
+  assert.ok(duplicate);
+  assert.equal(duplicate.fixable, true);
+
+  const fixed = await doctorClaudeCodeAdapter({ workspaceRoot: root, fix: true, sessionEnv });
+  const repaired = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(repaired.hooks.SessionStart.length, 1);
+  assert.equal(fixed.fixed.length, 1);
+  // The report describes the install as it is now, not as it was before --fix ran.
+  assert.equal(
+    fixed.issues.some((issue) => issue.code === 'DUPLICATE_HOOK_REGISTRATION'),
+    false
+  );
+  assert.equal(fixed.ok, true);
 });

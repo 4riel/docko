@@ -12,7 +12,7 @@ export const CLAUDE_CODE_ADAPTER_INTENT = {
 type ClaudeHookName = 'SessionStart' | 'SessionEnd' | 'PreToolUse' | 'SubagentStart';
 type ClaudeHookSubcommand = 'session-start' | 'session-end' | 'pre-tool-use' | 'subagent-start';
 type TargetPlatform = NodeJS.Platform;
-type ManagedWritePolicy = 'preserve' | 'launcher';
+type ManagedWritePolicy = 'preserve' | 'launcher' | 'generated';
 type ManagedWriteOutcome = 'written' | 'unchanged' | 'skipped';
 
 interface ClaudeHookCommand {
@@ -76,6 +76,12 @@ export interface ClaudeCodeDoctorResult {
   plugin_root: string;
   shipped_launcher_version: string;
   launcher: {
+    path: string;
+    exists: boolean;
+    version: string | null;
+    up_to_date: boolean;
+  };
+  plugin_manifest: {
     path: string;
     exists: boolean;
     version: string | null;
@@ -250,11 +256,27 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
 }
 
 /**
- * Reports the health of a repo-local Claude Code install: launcher version drift, duplicate or
- * dangling hook registrations, docko binary resolution, and the session id the runtime exports.
- * `fix` removes hook entries that point at launchers which do not exist or are out of date.
+ * Reports the health of a repo-local Claude Code install: launcher version drift, plugin manifest
+ * drift, duplicate or dangling hook registrations, docko binary resolution, and the session id
+ * the runtime exports. `fix` removes hook entries that point at launchers which do not exist or
+ * are out of date, and collapses duplicate registrations down to the first healthy one.
  */
 export async function doctorClaudeCodeAdapter(options: ClaudeCodeDoctorOptions): Promise<ClaudeCodeDoctorResult> {
+  const result = await diagnoseClaudeCodeAdapter(options, Boolean(options.fix));
+  if (result.fixed.length === 0) {
+    return result;
+  }
+
+  // Re-diagnose after fixing: an `ok: false` still carrying the issues we just repaired is
+  // indistinguishable from a fix that did not work.
+  const after = await diagnoseClaudeCodeAdapter(options, false);
+  return { ...after, fixed: result.fixed };
+}
+
+async function diagnoseClaudeCodeAdapter(
+  options: ClaudeCodeDoctorOptions,
+  fix: boolean
+): Promise<ClaudeCodeDoctorResult> {
   const workspaceRoot = path.resolve(options.workspaceRoot);
   const relativeDestination = options.destination ?? DEFAULT_PLUGIN_DESTINATION;
   const pluginRoot = path.resolve(workspaceRoot, relativeDestination);
@@ -281,6 +303,26 @@ export async function doctorClaudeCodeAdapter(options: ClaudeCodeDoctorOptions):
     issues.push({
       code: 'LAUNCHER_OUTDATED',
       message: `Hook launcher is version ${launcherVersion ?? 'unknown'} but docko ships ${shippedVersion}. Run: docko adapter claude-code install --root "${workspaceRoot}"`,
+      fixable: false
+    });
+  }
+
+  // The plugin manifest is generated from the package version on every install, so a mismatch
+  // means this install predates the docko currently on PATH.
+  const manifestPath = path.join(pluginRoot, 'plugin.json');
+  const manifestVersion = await readPluginManifestVersion(manifestPath);
+  const manifestUpToDate = manifestVersion === version;
+
+  if (manifestVersion === null) {
+    issues.push({
+      code: 'PLUGIN_MANIFEST_MISSING',
+      message: `No readable plugin manifest at ${manifestPath}. Run: docko adapter claude-code install --root "${workspaceRoot}"`,
+      fixable: false
+    });
+  } else if (!manifestUpToDate) {
+    issues.push({
+      code: 'PLUGIN_MANIFEST_OUTDATED',
+      message: `Plugin manifest is version ${manifestVersion} but docko ships ${version}. Run: docko adapter claude-code install --root "${workspaceRoot}"`,
       fixable: false
     });
   }
@@ -325,7 +367,7 @@ export async function doctorClaudeCodeAdapter(options: ClaudeCodeDoctorOptions):
       workspaceRoot,
       settingsPath,
       shippedVersion,
-      fix: Boolean(options.fix)
+      fix
     });
     issues.push(...inspection.issues);
     settingsFiles.push({
@@ -339,7 +381,7 @@ export async function doctorClaudeCodeAdapter(options: ClaudeCodeDoctorOptions):
     if (inspection.removedEntries > 0) {
       await writeFile(settingsPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
       fixed.push(
-        `${settingsPath}: removed ${inspection.removedEntries} stale docko hook entr${inspection.removedEntries === 1 ? 'y' : 'ies'}`
+        `${settingsPath}: removed ${inspection.removedEntries} stale or duplicate docko hook entr${inspection.removedEntries === 1 ? 'y' : 'ies'}`
       );
     }
   }
@@ -374,6 +416,12 @@ export async function doctorClaudeCodeAdapter(options: ClaudeCodeDoctorOptions):
       exists: launcherContent !== null,
       version: launcherVersion,
       up_to_date: launcherUpToDate
+    },
+    plugin_manifest: {
+      path: manifestPath,
+      exists: manifestVersion !== null,
+      version: manifestVersion,
+      up_to_date: manifestUpToDate
     },
     settings_files: settingsFiles,
     docko_binary: {
@@ -431,6 +479,22 @@ async function readShippedLauncherVersion(pluginBundleRoot: string, fallbackVers
   return (shipped === null ? null : readLauncherVersion(shipped)) ?? fallbackVersion;
 }
 
+// The manifest is generated JSON: a missing, unreadable, or version-less file is all the same
+// answer to the doctor, which is "reinstall".
+async function readPluginManifestVersion(manifestPath: string): Promise<string | null> {
+  const raw = await readFileOrNull(manifestPath);
+  if (raw === null) {
+    return null;
+  }
+
+  try {
+    const manifest = JSON.parse(raw) as { version?: unknown };
+    return typeof manifest.version === 'string' && manifest.version.length > 0 ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readFileOrNull(filePath: string): Promise<string | null> {
   try {
     return await readFile(filePath, 'utf8');
@@ -443,7 +507,7 @@ async function readFileOrNull(filePath: string): Promise<string | null> {
 }
 
 // The plugin manifest is generated (not copied) so its version is stamped from the live package
-// version on every install. Keep the field order stable for idempotent writes.
+// version on every install. Keep the field order stable so an unchanged install rewrites nothing.
 function buildPluginManifest(version: string): Record<string, unknown> {
   return {
     name: 'docko',
@@ -539,7 +603,10 @@ async function writeGeneratedFiles(args: {
   ];
 
   for (const file of generatedFiles) {
-    const result = await writeManagedFile(file.path, file.content, { force: args.force, policy: 'preserve' });
+    // Generated machine state, never a user asset: it is always brought back in line with the
+    // installed docko version. Identical content still reports as unchanged, so `written_files`
+    // only ever lists files whose content actually moved.
+    const result = await writeManagedFile(file.path, file.content, { force: args.force, policy: 'generated' });
     collectManagedWrite(result, file.path, { written, unchanged, skipped });
   }
 
@@ -635,9 +702,15 @@ async function writeManagedFile(
   return 'written';
 }
 
-// docko owns the launcher: when the shipped version differs from the installed one the file is
-// machine state that must track the release, not a user asset worth preserving.
+// docko owns the launcher and every generated manifest: those are machine state that must track
+// the release, not user assets worth preserving. Generated files are rewritten unconditionally;
+// the launcher only when the shipped version differs from the installed one, so a same-version
+// local edit survives.
 function shouldRefreshManagedFile(existing: string, content: string, policy: ManagedWritePolicy): boolean {
+  if (policy === 'generated') {
+    return true;
+  }
+
   if (policy !== 'launcher') {
     return false;
   }
@@ -674,6 +747,7 @@ async function inspectSettingsHooks(args: {
 
     const kept: unknown[] = [];
     let eventDockoEntries = 0;
+    let keptDockoEntries = 0;
 
     for (const entry of rawEntries) {
       const command = readEntryCommand(entry);
@@ -685,29 +759,37 @@ async function inspectSettingsHooks(args: {
       dockoEntries += 1;
       eventDockoEntries += 1;
       const state = await inspectLauncherCommand(command, args.workspaceRoot, args.shippedVersion);
-      if (state === 'healthy' || state === 'plugin-managed') {
+      if (state !== 'healthy' && state !== 'plugin-managed') {
+        staleEntries += 1;
+        issues.push({
+          code: state === 'missing' ? 'HOOK_LAUNCHER_MISSING' : 'HOOK_LAUNCHER_OUTDATED',
+          message:
+            state === 'missing'
+              ? `${args.settingsPath} registers ${eventName} against a launcher that does not exist: ${command}`
+              : `${args.settingsPath} registers ${eventName} against an outdated launcher: ${command}`,
+          fixable: true,
+          settings_file: args.settingsPath,
+          event: eventName,
+          command
+        });
+
+        if (args.fix) {
+          removedEntries += 1;
+          continue;
+        }
+
         kept.push(entry);
         continue;
       }
 
-      staleEntries += 1;
-      issues.push({
-        code: state === 'missing' ? 'HOOK_LAUNCHER_MISSING' : 'HOOK_LAUNCHER_OUTDATED',
-        message:
-          state === 'missing'
-            ? `${args.settingsPath} registers ${eventName} against a launcher that does not exist: ${command}`
-            : `${args.settingsPath} registers ${eventName} against an outdated launcher: ${command}`,
-        fixable: true,
-        settings_file: args.settingsPath,
-        event: eventName,
-        command
-      });
-
-      if (args.fix) {
+      // Claude Code runs the hook once per registration, so a second healthy entry doubles every
+      // hook for that event. --fix keeps the first and drops the rest.
+      if (args.fix && keptDockoEntries > 0) {
         removedEntries += 1;
         continue;
       }
 
+      keptDockoEntries += 1;
       kept.push(entry);
     }
 
