@@ -27,6 +27,10 @@ if (!version || !SEMVER.test(version)) {
   process.exit(1);
 }
 
+// The hook launcher carries its own version header so an installed copy can be compared against
+// the shipped one (`docko adapter claude-code doctor`).
+const LAUNCHER = 'packages/adapters/claude-code/plugin/scripts/docko-claude-hook.mjs';
+
 for (const relative of MANIFESTS) {
   const file = path.join(repoRoot, relative);
   const source = readFileSync(file, 'utf8');
@@ -38,5 +42,18 @@ for (const relative of MANIFESTS) {
   writeFileSync(file, next);
   console.log(`bumped ${relative} -> ${version}`);
 }
+
+const launcherFile = path.join(repoRoot, LAUNCHER);
+const launcherSource = readFileSync(launcherFile, 'utf8');
+const nextLauncher = launcherSource.replace(
+  /^\/\/ docko-launcher-version:.*$/m,
+  `// docko-launcher-version: ${version}`
+);
+if (nextLauncher === launcherSource) {
+  console.error(`No docko-launcher-version header updated in ${LAUNCHER}`);
+  process.exit(1);
+}
+writeFileSync(launcherFile, nextLauncher);
+console.log(`bumped ${LAUNCHER} -> ${version}`);
 
 console.log('\nNext: pnpm install (refresh lockfile), commit, open a PR, then run the Release workflow.');

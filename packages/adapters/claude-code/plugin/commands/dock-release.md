@@ -7,12 +7,15 @@ Release a previously claimed `docko` slot.
 
 Argument: `$1` is the slot id.
 
-Claude should already have a current `docko` session from the installed hooks, so the CLI can resolve the session automatically. If the CLI reports `AMBIGUOUS_SESSION`, run `docko session list --root . --brief`, retry with the correct `--session <id>`, and do not end existing sessions unless the user asked for cleanup.
+The docko SessionStart hook exports `DOCKO_SESSION_ID` for this session, so pass `--session "$DOCKO_SESSION_ID"` when the variable is set. If it is not set, take the id from `docko session list --brief` and pass it explicitly. Never invent a session id.
 
 Run:
 
 ```bash
-docko release --root . --resource slot --id "$1"
+docko release --session "$DOCKO_SESSION_ID" --resource slot --id "$1"
 ```
 
-If the current session is not the owner, stop and explain why.
+Expected failures:
+
+- `RESOURCE_NOT_CLAIMED` — the slot is already free (the janitor or a session end released it). Nothing to do.
+- `RESOURCE_OWNED_BY_OTHER_SESSION` — another session owns the claim. Stop and explain why; only add `--force` when the user asks for a takeover.

@@ -20,6 +20,7 @@ import {
   type RegistryResource,
   type ReleaseOptions,
   type SessionManifest,
+  type SessionPruneOptions,
   type SessionPruneResult,
   type SessionStartOptions,
   type StatusResult,
@@ -28,6 +29,7 @@ import {
 import {
   DEFAULT_CLAUDE_PLUGIN_DESTINATION,
   buildClaudeCodeSettingsFragment,
+  doctorClaudeCodeAdapter,
   installClaudeCodeAdapter,
   readClaudeCodeSnippet
 } from '@docko/adapter-claude-code';
@@ -48,6 +50,7 @@ interface ParsedArgs {
 interface CliContext {
   command: string[];
   options: OptionMap;
+  argv: string[];
   root: string;
   service: DockoService;
   sessionEnv: string | null;
@@ -115,6 +118,42 @@ interface BriefSlotCounts {
   free: number;
   claimed: number;
 }
+
+interface StaleClaimCandidate {
+  resource_id: string;
+  application_id: string | null;
+  owner_session_id: string | null;
+  last_heartbeat_at: string | null;
+  age_ms: number;
+  stale_after_ms: number;
+}
+
+interface StatusSummary {
+  workspace_root: string;
+  slots: BriefSlotCounts;
+  applications: Array<{ application_id: string; slots: BriefSlotCounts }>;
+  session_id: string | null;
+  my_claims: string[];
+  stale_candidates: StaleClaimCandidate[];
+}
+
+interface StatusPayload extends StatusResult {
+  resolved_root: string;
+  summary: StatusSummary;
+}
+
+// Resource fields docko reads but does not (yet) own in the core registry shape.
+interface OptionalResourceFlags {
+  auto_acquire?: boolean;
+}
+
+// Session prune gained ended-manifest retention in core; keep the CLI forward-compatible
+// with builds that predate it instead of hard-failing on an unknown option.
+type SessionPruneRequest = SessionPruneOptions & { deleteEndedOlderThanMs?: number };
+
+const DEFAULT_SESSION_LIST_LIMIT = 20;
+// Ended session manifests are kept for a week so a post-mortem can still read them.
+const DEFAULT_ENDED_MANIFEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 function parseArgs(argv: string[]): ParsedArgs {
   const command: string[] = [];
@@ -278,14 +317,19 @@ Commands:
   session prune                     End sessions that have gone quiet
   adapter claude-code install       Install Claude Code adapter assets
   adapter claude-code settings      Print Claude Code settings fragment
+  adapter claude-code doctor        Diagnose a repo-local Claude Code install
   adapter claude-code session-start Start a Claude Code session (hook)
   adapter claude-code session-end   End a Claude Code session (hook)
   adapter claude-code pre-tool-use  Authorize a file write (hook)
   adapter claude-code subagent-start  Start a delegated subagent (hook)
 
+Run "docko <command> --help" for that command's usage.
+
 Global options:
-  --root <path>       Workspace root (default: DOCKO_ROOT env or cwd)
-  --session <id>      Session ID (default: DOCKO_SESSION_ID env or auto-resolve)
+  --root <path>       Workspace root (default: DOCKO_ROOT env or cwd). Resolves up to the owning
+                      workspace when it points inside a slot; only "init" refuses that.
+  --session <id>      Session ID (default: DOCKO_SESSION_ID or CLAUDE_CODE_SESSION_ID env,
+                      otherwise the single active session)
   --brief             Return an agent-friendly compact payload for supported commands
   --help              Show this help message
 
@@ -321,15 +365,189 @@ Application options:
   --slot-base <id>    Base slot name when generating application slots (default: main)
 
 Slot acquire options:
+  --prefer <slot-id>  Take this slot when it is free, otherwise fall back to round-robin
   --clone-when-busy   Duplicate and claim a fresh managed slot when none are free
   --clone-from <p>    Source slot or path for the busy-slot clone fallback
   --clone-slot <id>   Preferred slot id for the busy-slot clone fallback
 
+Status options:
+  --claimed           List only claimed resources
+  --application <id>  List only one application's resources
+
 Session prune options:
   --max-age-ms <n>    Quiet time after which a session is ended (default: workspace session stale timeout)
+  --delete-ended-older-than-ms <n>  Delete ended session manifests older than this (default: 7 days)
   --dry-run           Report the sessions that would be ended without changing anything
 `;
   process.stdout.write(help);
+}
+
+// Per-command usage. Agents ask `docko <command> --help` and a single generic page taught them
+// nothing about the command they were actually running.
+const COMMAND_HELP: Record<string, string> = {
+  init: `docko init — initialize a workspace and discover slots
+
+Usage: docko init [--root <path>] [options]
+
+Options:
+  --mode <mode>                 auto | workspace | repo (default: auto)
+  --slot <id>                   Create a starter slot directory. Repeatable.
+  --slot-stale-after-ms <n>     Default stale timeout for slot claims
+  --session-stale-after-ms <n>  Default stale timeout for sessions
+  --claude / --codex            Install Claude Code assets / prepare Codex onboarding
+  --inject-claude               Inject docko guidance into CLAUDE.md
+  --inject-codex                Inject docko guidance into AGENTS.md
+  --existing                    Guided init for existing clones or slots
+  --clone-source <p>            Duplicate an existing repo or clone into a managed slot
+  --clone-slot <id>             Target slot id for --clone-source
+  --json                        Force JSON output even in interactive mode
+  --force                       Overwrite managed Claude files
+
+Notes:
+  init is the only command that does not resolve --root up to an owning workspace; an explicit
+  --root inside a managed slot is refused with ROOT_INSIDE_SLOT.
+`,
+  'slot acquire': `docko slot acquire — claim a slot chosen by docko
+
+Usage: docko slot acquire [--application <id>] [--prefer <slot-id>] --branch <b> --task "<t>" [--brief]
+
+Options:
+  --application <id>  Restrict the pick to one application's slots
+  --prefer <slot-id>  Take this slot when it is free, otherwise round-robin
+  --branch <name>     Claim metadata: the branch this work belongs to (docko never checks it out)
+  --task "<text>"     Claim metadata: what the claim is for
+  --clone-when-busy   Duplicate and claim a fresh managed slot when none are free
+  --clone-from <p>    Source slot or path for the clone fallback
+  --clone-slot <id>   Slot id for the clone fallback
+  --session <id>      Acting session
+  --brief             Compact payload
+
+Selection is round-robin: it starts after the last slot claimed for that application and wraps.
+Slots whose registry entry sets auto_acquire: false are skipped unless named with --prefer.
+`,
+  'slot duplicate': `docko slot duplicate — duplicate a repo or slot into a managed slot
+
+Usage: docko slot duplicate --from <path-or-slot> --to <slot-id> [--application <id>]
+`,
+  'app ensure': `docko app ensure — register an application and optionally seed its slots
+
+Usage: docko app ensure --id <application> [--name <text>] [--description <text>]
+                        [--keyword <value>]... [--source <path>] [--slots <n>] [--slot-base <id>]
+`,
+  status: `docko status — show resource status
+
+Usage: docko status [--brief] [--claimed] [--application <id>] [--resource <type>] [--id <id>]
+
+Options:
+  --brief             Compact, agent-friendly payload
+  --claimed           Only claimed resources
+  --application <id>  Only one application's resources
+  --resource <type>   Filter by resource type (e.g. slot)
+  --id <id>           Filter by resource id
+
+Output includes resolved_root and a summary block: per-application free/claimed counts, this
+session's claims (my_claims), and stale_candidates with the owner's last heartbeat.
+`,
+  claim: `docko claim — claim a resource for a session
+
+Usage: docko claim --resource slot --id <slot> [--branch <b>] [--task "<t>"] [--session <id>]
+
+--branch and --task are claim metadata. docko records them and never runs git checkout.
+Claims are slot-scoped: they do not reserve a branch, a PR, or individual files.
+`,
+  heartbeat: `docko heartbeat — refresh a claim's heartbeat
+
+Usage: docko heartbeat --resource slot --id <slot> [--session <id>]
+`,
+  release: `docko release — release a claimed resource
+
+Usage: docko release --resource slot --id <slot> [--reason <text>] [--force] [--session <id>]
+
+Errors:
+  RESOURCE_NOT_CLAIMED            The resource is already free; nothing to release.
+  RESOURCE_OWNED_BY_OTHER_SESSION Another session owns the claim. Re-run with --force to take it
+                                  over; the takeover is logged and reported as forced_by_session_id.
+`,
+  delegate: `docko delegate — grant resource authority to a child session
+
+Usage: docko delegate --child-session <id> --resource slot --id <slot> [--scope read|write]
+
+Agent-tool subagents share the parent's session id and need no delegation. A separately launched
+runtime session gets its own id and must be delegated explicitly.
+`,
+  'resource ensure': `docko resource ensure — register or update a resource
+
+Usage: docko resource ensure --resource <type> --id <id> [--path <path>]
+                             [--auto-acquire | --no-auto-acquire]
+
+--no-auto-acquire pins a slot out of "slot acquire" rotation; it stays claimable by name.
+`,
+  logs: `docko logs — show recent debug log entries
+
+Usage: docko logs [--days <n>] [--limit <n>]
+`,
+  render: `docko render — re-render docko/registry.md from registry.json
+
+Usage: docko render
+`,
+  'session start': `docko session start — start a new session
+
+Usage: docko session start [--session <id>] [--runtime <name>] [--actor-mode <mode>]
+                           [--parent-session <id>] [--delegated-from-session <id>]
+
+Only a runtime's own session id is recognized by that runtime's write hook. Do not invent one.
+`,
+  'session end': `docko session end — end a session and release its claims
+
+Usage: docko session end [--session <id>]
+`,
+  'session current': `docko session current — show or resolve the current session
+
+Usage: docko session current [--session <id>] [--id-only]
+`,
+  'session list': `docko session list — list active sessions
+
+Usage: docko session list [--limit <n>] [--brief]
+
+--limit defaults to 20, newest first. active_session_count reports the full total.
+`,
+  'session prune': `docko session prune — end sessions that have gone quiet
+
+Usage: docko session prune [--max-age-ms <n>] [--delete-ended-older-than-ms <n>] [--dry-run] [--brief]
+
+--delete-ended-older-than-ms defaults to 7 days and reclaims ended session manifests from disk.
+`,
+  'adapter claude-code install': `docko adapter claude-code install — install repo-local Claude Code assets
+
+Usage: docko adapter claude-code install [--dest <path>] [--write-settings-local] [--force]
+
+The hook launcher is refreshed automatically when the shipped version differs from the installed
+one. Other managed files are preserved unless --force is passed.
+`,
+  'adapter claude-code settings': `docko adapter claude-code settings — print the Claude Code hook settings fragment
+
+Usage: docko adapter claude-code settings [--dest <path>]
+`,
+  'adapter claude-code doctor': `docko adapter claude-code doctor — diagnose a repo-local Claude Code install
+
+Usage: docko adapter claude-code doctor [--dest <path>] [--fix]
+
+Reports launcher version drift, duplicate or dangling docko hook registrations in
+.claude/settings.json and .claude/settings.local.json, docko binary resolution, and the session id
+this shell exports. --fix removes hook entries pointing at launchers that are missing or outdated.
+`
+};
+
+function printCommandHelp(command: string[]): void {
+  for (let length = Math.min(command.length, 3); length > 0; length -= 1) {
+    const help = COMMAND_HELP[command.slice(0, length).join(' ')];
+    if (help) {
+      process.stdout.write(help);
+      return;
+    }
+  }
+
+  printHelp();
 }
 
 function workspaceRoot(options: OptionMap): string {
@@ -369,31 +587,32 @@ function isPathInsideSlots(workspaceRootPath: string, candidate: string): boolea
 // legitimately scaffolds a fresh workspace at the given location.
 function resolveWorkspaceRoot(command: string[], options: OptionMap): string {
   const startDir = path.resolve(workspaceRoot(options));
+  const ownedRoot = hasRegistryAt(startDir) ? startDir : findWorkspaceRoot(startDir);
+
+  // `init` scaffolds a workspace at the given location, so it never walks up. An explicit
+  // --root inside a managed slot stays a loud failure there: that is the one case where
+  // resolving up would silently leak a second registry into a slot.
   if (command[0] === 'init') {
+    if (
+      ownedRoot &&
+      ownedRoot !== startDir &&
+      option(options, 'root') !== null &&
+      isPathInsideSlots(ownedRoot, startDir)
+    ) {
+      throw new DockoError(
+        `--root points inside the managed slot ${startDir}. Initialize the workspace root instead: docko init --root "${ownedRoot}"`,
+        'ROOT_INSIDE_SLOT',
+        1,
+        { provided_root: startDir, workspace_root: ownedRoot }
+      );
+    }
+
     return startDir;
   }
 
-  if (hasRegistryAt(startDir)) {
-    return startDir;
-  }
-
-  const ancestorRoot = findWorkspaceRoot(startDir);
-  if (!ancestorRoot) {
-    return startDir;
-  }
-
-  // An explicit --root pointing inside a managed slot is a mistake: fail loud instead of
-  // silently leaking a registry into the slot. An implicit cwd inside a slot is resolved up.
-  if (option(options, 'root') !== null && isPathInsideSlots(ancestorRoot, startDir)) {
-    throw new DockoError(
-      `--root points inside a managed slot (${toDisplayPath(startDir)}). Run docko against the workspace root instead (${toDisplayPath(ancestorRoot)}).`,
-      'ROOT_INSIDE_SLOT',
-      1,
-      { provided_root: startDir, workspace_root: ancestorRoot }
-    );
-  }
-
-  return ancestorRoot;
+  // Every other command resolves UP to the owning workspace. Agents routinely run docko with
+  // `--root .` from inside a slot; that is the same intent as no --root at all, so it must work.
+  return ownedRoot ?? startDir;
 }
 
 function requiredOption(options: OptionMap, key: string): string {
@@ -425,6 +644,70 @@ function parseEnum<T extends string>(raw: string, allowed: readonly T[], label: 
     });
   }
   return raw as T;
+}
+
+function quoteCliArgument(value: string): string {
+  return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+// Re-render the current invocation with an explicit --session so a blocked agent can copy one
+// line instead of picking an id out of an ambiguity payload.
+function buildSuggestedCommand(argv: string[], sessionId: string): string {
+  const args: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--session') {
+      index += 1;
+      continue;
+    }
+    args.push(argv[index]);
+  }
+  args.push('--session', sessionId);
+  return `docko ${args.map(quoteCliArgument).join(' ')}`;
+}
+
+function pickSuggestedSessionId(context: CliContext, details: Record<string, unknown>): string | null {
+  if (context.sessionEnv) {
+    return context.sessionEnv;
+  }
+
+  if (typeof details.newest_session_id === 'string') {
+    return details.newest_session_id;
+  }
+
+  const activeSessions = Array.isArray(details.active_sessions) ? details.active_sessions : [];
+  const newest = activeSessions[0];
+  if (newest && typeof newest === 'object' && typeof (newest as { session_id?: unknown }).session_id === 'string') {
+    return (newest as { session_id: string }).session_id;
+  }
+
+  return null;
+}
+
+// Core owns the ambiguity payload; the CLI owns the copy-pastable retry, because only the CLI
+// knows the argv the caller actually typed.
+function withSessionRecovery(context: CliContext, error: unknown): unknown {
+  if (!(error instanceof DockoError) || error.code !== 'AMBIGUOUS_SESSION') {
+    return error;
+  }
+
+  const details = error.details ?? {};
+  const sessionId = pickSuggestedSessionId(context, details);
+  if (!sessionId) {
+    return error;
+  }
+
+  return new DockoError(error.message, error.code, error.exitCode, {
+    ...details,
+    suggested_command: buildSuggestedCommand(context.argv, sessionId)
+  });
+}
+
+async function resolveSessionId(context: CliContext): Promise<string> {
+  try {
+    return await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+  } catch (error: unknown) {
+    throw withSessionRecovery(context, error);
+  }
 }
 
 function extractHookFilePath(payload: Record<string, unknown>): string | null {
@@ -1436,6 +1719,77 @@ function countSlots(resources: RegistryResource[]): BriefSlotCounts {
   };
 }
 
+function claimHeartbeatAt(resource: RegistryResource): string | null {
+  return resource.claim?.heartbeat_at ?? resource.claim?.updated_at ?? resource.claim?.claimed_at ?? null;
+}
+
+// A claim is a stale candidate once it has been quiet for more than half its stale window:
+// the owner is still authoritative, but the janitor is about to reclaim it.
+function collectStaleCandidates(resources: RegistryResource[], now: number): StaleClaimCandidate[] {
+  const candidates: StaleClaimCandidate[] = [];
+
+  for (const resource of resources) {
+    const claim = resource.claim;
+    if (resource.status !== 'claimed' || !claim) {
+      continue;
+    }
+
+    const lastHeartbeatAt = claimHeartbeatAt(resource);
+    const lastSeen = lastHeartbeatAt ? Date.parse(lastHeartbeatAt) : Number.NaN;
+    if (!Number.isFinite(lastSeen)) {
+      continue;
+    }
+
+    const ageMs = Math.max(0, now - lastSeen);
+    if (ageMs * 2 < claim.stale_after_ms) {
+      continue;
+    }
+
+    candidates.push({
+      resource_id: resource.resource_id,
+      application_id: resource.application_id ?? null,
+      owner_session_id: claim.owner_session_id,
+      last_heartbeat_at: lastHeartbeatAt,
+      age_ms: ageMs,
+      stale_after_ms: claim.stale_after_ms
+    });
+  }
+
+  return candidates.sort((left, right) => right.age_ms - left.age_ms);
+}
+
+function sessionOwnsResource(resource: RegistryResource, sessionId: string): boolean {
+  return (
+    resource.claim?.owner_session_id === sessionId ||
+    (resource.delegations ?? []).some((delegation) => delegation.child_session_id === sessionId)
+  );
+}
+
+// The aggregate view agents actually ask for: how many slots are free, which ones are mine, and
+// which claims are about to lapse. Without it they parse the full resource array by hand.
+function buildStatusSummary(
+  status: StatusResult,
+  workspaceRootPath: string,
+  sessionId: string | null,
+  now = Date.now()
+): StatusSummary {
+  const resources = status.resources ?? [];
+
+  return {
+    workspace_root: workspaceRootPath,
+    slots: countSlots(resources),
+    applications: (status.applications ?? []).map((application: WorkspaceApplication) => ({
+      application_id: application.application_id,
+      slots: countSlots(resources.filter((resource) => resource.application_id === application.application_id))
+    })),
+    session_id: sessionId,
+    my_claims: sessionId
+      ? resources.filter((resource) => sessionOwnsResource(resource, sessionId)).map((resource) => resource.resource_id)
+      : [],
+    stale_candidates: collectStaleCandidates(resources, now)
+  };
+}
+
 function compactResource(resource: RegistryResource): Record<string, unknown> {
   return {
     type: resource.resource_type,
@@ -1452,8 +1806,9 @@ function compactResource(resource: RegistryResource): Record<string, unknown> {
   };
 }
 
-function compactStatus(status: StatusResult): Record<string, unknown> {
+function compactStatus(status: StatusResult | StatusPayload): Record<string, unknown> {
   const resources = status.resources ?? [];
+  const payload = status as Partial<StatusPayload>;
   const applicationSummaries = (status.applications ?? []).map((application: WorkspaceApplication) => {
     const applicationResources = resources.filter((resource) => resource.application_id === application.application_id);
     return {
@@ -1471,8 +1826,10 @@ function compactStatus(status: StatusResult): Record<string, unknown> {
       workspace_root: status.workspace.workspace_root,
       name: status.workspace.name
     },
+    resolved_root: payload.resolved_root ?? status.workspace.workspace_root,
     slots: countSlots(resources),
     applications: applicationSummaries,
+    summary: payload.summary ?? null,
     resources: resources.map(compactResource),
     janitor_released: status.janitor.released_claims.length,
     released_claims: status.janitor.released_claims.map(compactResource),
@@ -1486,6 +1843,7 @@ function compactSlotAcquire(result: Record<string, unknown>): Record<string, unk
   return {
     ok: result.ok,
     action: result.action,
+    resolved_root: result.resolved_root ?? null,
     session_id: result.session_id,
     slot_id: result.slot_id,
     application_id: result.application_id,
@@ -1515,19 +1873,30 @@ function compactSession(session: SessionManifest): Record<string, unknown> {
   };
 }
 
-function compactSessionList(result: { active_sessions: SessionManifest[] }): Record<string, unknown> {
+function compactSessionList(result: {
+  active_sessions: SessionManifest[];
+  active_session_count?: number;
+  limit?: number;
+}): Record<string, unknown> {
   return {
-    active_session_count: result.active_sessions.length,
+    active_session_count: result.active_session_count ?? result.active_sessions.length,
+    returned_session_count: result.active_sessions.length,
+    limit: result.limit ?? null,
     active_sessions: result.active_sessions.map(compactSession)
   };
 }
 
 function compactSessionPrune(result: SessionPruneResult): Record<string, unknown> {
+  // `deleted_manifests` only exists on core builds that reclaim ended manifests; omit it
+  // rather than reporting a misleading zero on builds that do not.
+  const deletedManifests = (result as SessionPruneResult & { deleted_manifests?: unknown }).deleted_manifests;
+
   return {
     dry_run: result.dry_run,
     max_age_ms: result.max_age_ms,
     pruned_session_count: result.pruned_session_count,
-    pruned_sessions: result.pruned_sessions.map(compactSession)
+    pruned_sessions: result.pruned_sessions.map(compactSession),
+    ...(deletedManifests === undefined ? {} : { deleted_manifests: deletedManifests })
   };
 }
 
@@ -1763,9 +2132,46 @@ async function confirmBusySlotClone(
   }
 }
 
+// A workspace can pin a slot out of automatic rotation (a shared reference clone, say) by
+// setting auto_acquire: false on its registry entry. An explicit --prefer/--id still wins.
+function isAutoAcquireDisabled(resource: SlotResourceSummary): boolean {
+  return (resource as SlotResourceSummary & OptionalResourceFlags).auto_acquire === false;
+}
+
+function resolvePreferredSlot(
+  slotResources: SlotResourceSummary[],
+  preferredSlotId: string | null,
+  applicationId: string | null
+): SlotResourceSummary | null {
+  if (!preferredSlotId) {
+    return null;
+  }
+
+  const preferred = slotResources.find(
+    (resource) => resource.resource_id === preferredSlotId || resource.slot_name === preferredSlotId
+  );
+  if (preferred) {
+    return preferred;
+  }
+
+  throw new DockoError(
+    applicationId
+      ? `--prefer ${preferredSlotId} does not name a slot of application ${applicationId}.`
+      : `--prefer ${preferredSlotId} does not name a managed slot.`,
+    'PREFERRED_SLOT_NOT_FOUND',
+    1,
+    {
+      preferred_slot_id: preferredSlotId,
+      application_id: applicationId,
+      known_slot_ids: slotResources.map((resource) => resource.resource_id)
+    }
+  );
+}
+
 async function acquireSlot(context: CliContext): Promise<Record<string, unknown>> {
-  const sessionId = await context.service.resolveSessionId(option(context.options, 'session'), context.sessionEnv);
+  const sessionId = await resolveSessionId(context);
   const explicitApplicationId = option(context.options, 'application');
+  const preferredSlotId = option(context.options, 'prefer');
   const preferredCloneSource = option(context.options, 'clone-from');
   const preferredCloneSlot = option(context.options, 'clone-slot');
   let approvedCloneFallback: boolean | null = context.options['clone-when-busy'] ? true : null;
@@ -1797,10 +2203,21 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
     }
 
     const schedulerKey = schedulerKeyForApplication(selectedApplication?.application_id ?? null);
-    const freeSlots = slotResources.filter((resource) => resource.status === 'free');
-    if (freeSlots.length > 0) {
+    const preferredSlot = resolvePreferredSlot(
+      slotResources,
+      preferredSlotId,
+      selectedApplication?.application_id ?? null
+    );
+    // Rotation only ever considers auto-acquirable slots; a pinned slot is reachable by name.
+    const rotatableSlots = slotResources.filter((resource) => !isAutoAcquireDisabled(resource));
+    const freeSlots = rotatableSlots.filter((resource) => resource.status === 'free');
+    if (freeSlots.length > 0 || (preferredSlot && preferredSlot.status === 'free')) {
       const lastSlotId = status.workspace?.config?.scheduler?.last_slot_id?.[schedulerKey] ?? null;
-      const orderedFreeSlots = rotateFreeSlotsByCursor(slotResources, freeSlots, lastSlotId);
+      const rotatedFreeSlots = rotateFreeSlotsByCursor(rotatableSlots, freeSlots, lastSlotId);
+      const orderedFreeSlots =
+        preferredSlot && preferredSlot.status === 'free'
+          ? [preferredSlot, ...rotatedFreeSlots.filter((slot) => slot.resource_id !== preferredSlot.resource_id)]
+          : rotatedFreeSlots;
       for (const freeSlot of orderedFreeSlots) {
         try {
           const claim = await context.service.claim(
@@ -1809,6 +2226,8 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
           return {
             ok: true,
             action: 'claimed-existing-slot',
+            resolved_root: context.root,
+            preferred_slot_id: preferredSlotId,
             session_id: sessionId,
             slot_id: freeSlot.resource_id,
             application_id: freeSlot.application_id ?? null,
@@ -1858,8 +2277,14 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
         'NO_FREE_SLOT',
         2,
         {
+          workspace_root: context.root,
           slot_count: slotResources.length,
-          busy_slot_count: slotResources.length
+          busy_slot_count: slotResources.length,
+          pinned_slot_ids: slotResources.filter(isAutoAcquireDisabled).map((resource) => resource.resource_id),
+          next_steps: [
+            `docko slot acquire --root "${context.root}" --session ${sessionId} --clone-when-busy`,
+            `docko status --root "${context.root}" --brief --claimed`
+          ]
         }
       );
     }
@@ -1884,6 +2309,8 @@ async function acquireSlot(context: CliContext): Promise<Record<string, unknown>
       return {
         ok: true,
         action: 'cloned-and-claimed',
+        resolved_root: context.root,
+        preferred_slot_id: preferredSlotId,
         session_id: sessionId,
         slot_id: duplicated.slot_id,
         application_id: duplicated.application_id ?? null,
@@ -2287,7 +2714,29 @@ function shouldRenderInteractiveInit(context: CliContext, key: string): boolean 
 }
 
 function shouldRenderBrief(context: CliContext, key: string): boolean {
-  return Boolean(context.options.brief) && ['status', 'slot acquire', 'session list', 'session prune'].includes(key);
+  return (
+    Boolean(context.options.brief) &&
+    ['status', 'slot acquire', 'session list', 'session prune', 'release'].includes(key)
+  );
+}
+
+function compactRelease(result: Record<string, unknown>): Record<string, unknown> {
+  const claim = isRecordValue(result.claim) ? result.claim : null;
+
+  return {
+    ok: true,
+    released: true,
+    resource_type: result.resource_type ?? null,
+    resource_id: result.resource_id ?? null,
+    released_by_session_id: result.released_by_session_id ?? null,
+    previous_owner_session_id: result.previous_owner_session_id ?? null,
+    forced_by_session_id: result.forced_by_session_id ?? null,
+    release_reason: claim?.release_reason ?? null
+  };
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function renderBriefPayload(key: string, result: unknown): unknown {
@@ -2305,6 +2754,10 @@ function renderBriefPayload(key: string, result: unknown): unknown {
 
   if (key === 'session prune') {
     return compactSessionPrune(result as SessionPruneResult);
+  }
+
+  if (key === 'release') {
+    return compactRelease(result as Record<string, unknown>);
   }
 
   return result;
@@ -2328,9 +2781,12 @@ async function createContext(argv: string[]): Promise<CliContext> {
   return {
     command,
     options,
+    argv,
     root,
     service: new DockoService(root),
-    sessionEnv: process.env.DOCKO_SESSION_ID ?? null
+    // Claude Code exports CLAUDE_CODE_SESSION_ID into every tool call, so an agent typing a
+    // bare docko command still resolves to its own session without inventing an id.
+    sessionEnv: process.env.DOCKO_SESSION_ID ?? process.env.CLAUDE_CODE_SESSION_ID ?? null
   };
 }
 
@@ -2401,13 +2857,174 @@ async function buildEnsureApplicationOptions(context: CliContext): Promise<Ensur
   };
 }
 
-function serializeAuthorization(authorization: AuthorizationResult): Record<string, unknown> {
+// Core owns the decision; the CLI forwards every field a runtime adapter needs to explain it.
+// Fields core does not populate yet are emitted as null so the launcher can stay one shape.
+function serializeAuthorization(
+  authorization: AuthorizationResult,
+  workspaceRootPath: string
+): Record<string, unknown> {
+  const detail = authorization as AuthorizationResult & {
+    owner_task?: string | null;
+    owner_branch?: string | null;
+    owner_session_active?: boolean | null;
+    expired_at?: string | null;
+    slot_path?: string | null;
+  };
+
   return {
     allow: authorization.allowed,
     reason: authorization.reason,
     session_id: authorization.session_id,
     resource_id: authorization.resource_id,
-    owner_session_id: authorization.owner_session_id
+    owner_session_id: authorization.owner_session_id,
+    owner_task: detail.owner_task ?? null,
+    owner_branch: detail.owner_branch ?? null,
+    owner_session_active: detail.owner_session_active ?? null,
+    expired_at: detail.expired_at ?? null,
+    slot_path: detail.slot_path ?? null,
+    workspace_root: workspaceRootPath
+  };
+}
+
+// The SessionStart payload is the only place an agent reliably reads its own session id, so it
+// carries the id, the workspace root, and the three commands it needs, already filled in.
+function buildSessionStartContext(sessionId: string, workspaceRootPath: string): string {
+  const rootArg = `--root "${workspaceRootPath}"`;
+  return [
+    `Your docko session id is ${sessionId} and this workspace root is ${workspaceRootPath}.`,
+    'DOCKO_SESSION_ID is exported for this session; never invent a session id.',
+    'Claim a slot before writing inside slots/:',
+    `  docko slot acquire ${rootArg} --session ${sessionId} --branch <branch> --task "<task>" --brief`,
+    `  docko claim ${rootArg} --session ${sessionId} --resource slot --id <slot> --branch <branch> --task "<task>"`,
+    `  docko release ${rootArg} --session ${sessionId} --resource slot --id <slot>`
+  ].join('\n');
+}
+
+// `status` never fails on session ambiguity: the summary just omits `my_claims` when the caller
+// cannot be identified.
+async function resolveSessionIdQuietly(context: CliContext): Promise<string | null> {
+  const explicit = option(context.options, 'session') ?? context.sessionEnv;
+  if (explicit) {
+    return explicit;
+  }
+
+  try {
+    return await context.service.resolveSessionId(null, null);
+  } catch {
+    return null;
+  }
+}
+
+async function buildStatusPayload(context: CliContext): Promise<StatusPayload> {
+  const status = await context.service.status(
+    option(context.options, 'resource') ?? undefined,
+    option(context.options, 'id') ?? undefined
+  );
+  const applicationId = option(context.options, 'application');
+  const sessionId = await resolveSessionIdQuietly(context);
+  // The summary always describes the whole workspace, even when the resource list is filtered.
+  const summary = buildStatusSummary(status, context.root, sessionId);
+
+  let resources = status.resources;
+  if (applicationId) {
+    resources = resources.filter((resource) => resource.application_id === applicationId);
+  }
+  if (context.options.claimed) {
+    resources = resources.filter((resource) => resource.status === 'claimed');
+  }
+
+  return { ...status, resources, resolved_root: context.root, summary };
+}
+
+function readAutoAcquireOption(options: OptionMap): boolean | null {
+  if (options['no-auto-acquire']) {
+    return false;
+  }
+
+  if (options['auto-acquire']) {
+    return true;
+  }
+
+  return null;
+}
+
+async function ensureResource(context: CliContext): Promise<Record<string, unknown>> {
+  const autoAcquire = readAutoAcquireOption(context.options);
+  const ensureOptions = {
+    ...buildEnsureResourceOptions(context),
+    ...(autoAcquire === null ? {} : { autoAcquire })
+  } as EnsureResourceOptions;
+  const resource = await context.service.ensureResource(ensureOptions);
+  if (autoAcquire === null) {
+    return resource as unknown as Record<string, unknown>;
+  }
+
+  // Report honestly when the running core build does not persist the flag yet, instead of
+  // letting the caller believe a slot was pinned out of rotation.
+  const persisted = (resource as RegistryResource & OptionalResourceFlags).auto_acquire ?? true;
+  return {
+    ...resource,
+    auto_acquire: persisted,
+    auto_acquire_persisted: persisted === autoAcquire
+  };
+}
+
+function withReleaseRecovery(context: CliContext, sessionId: string, resourceId: string, error: unknown): unknown {
+  if (!(error instanceof DockoError)) {
+    return error;
+  }
+
+  if (error.code === 'RESOURCE_NOT_CLAIMED') {
+    return new DockoError(
+      `${resourceId} is not claimed, so there is nothing to release. The janitor or a session end may have released it already.`,
+      error.code,
+      error.exitCode,
+      {
+        ...error.details,
+        workspace_root: context.root,
+        session_id: sessionId,
+        next_steps: [`docko status --root "${context.root}" --brief --claimed`]
+      }
+    );
+  }
+
+  if (error.code === 'RESOURCE_OWNED_BY_OTHER_SESSION') {
+    return new DockoError(
+      `${resourceId} is claimed by another session. Ask that session to release it, or take it over with --force.`,
+      error.code,
+      error.exitCode,
+      {
+        ...error.details,
+        workspace_root: context.root,
+        session_id: sessionId,
+        suggested_command: buildSuggestedCommand([...context.argv, '--force'], sessionId)
+      }
+    );
+  }
+
+  return error;
+}
+
+async function releaseResource(context: CliContext): Promise<Record<string, unknown>> {
+  const sessionId = await resolveSessionId(context);
+  const releaseOptions = buildReleaseOptions(context, sessionId);
+  const force = Boolean(context.options.force);
+
+  let resource: RegistryResource;
+  try {
+    resource = await context.service.release(releaseOptions);
+  } catch (error: unknown) {
+    throw withReleaseRecovery(context, sessionId, releaseOptions.resourceId, error);
+  }
+
+  const previousOwnerSessionId = resource.claim?.owner_session_id ?? null;
+  return {
+    ...resource,
+    released_by_session_id: sessionId,
+    previous_owner_session_id: previousOwnerSessionId,
+    ...(force && previousOwnerSessionId && previousOwnerSessionId !== sessionId
+      ? { forced_by_session_id: sessionId }
+      : {})
   };
 }
 
@@ -2434,24 +3051,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
         };
       }
     ],
-    [
-      'status',
-      async () => {
-        const status = await context.service.status(
-          option(context.options, 'resource') ?? undefined,
-          option(context.options, 'id') ?? undefined
-        );
-        const applicationId = option(context.options, 'application');
-        if (!applicationId) {
-          return status;
-        }
-
-        return {
-          ...status,
-          resources: status.resources.filter((resource) => resource.application_id === applicationId)
-        };
-      }
-    ],
+    ['status', async () => buildStatusPayload(context)],
     [
       'logs',
       async () =>
@@ -2460,44 +3060,26 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
           limit: parsePositiveInt(option(context.options, 'limit'), 'limit')
         })
     ],
-    ['resource ensure', async () => context.service.ensureResource(buildEnsureResourceOptions(context))],
+    ['resource ensure', async () => ensureResource(context)],
     [
       'claim',
       async () => {
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
+        const sessionId = await resolveSessionId(context);
         return context.service.claim(buildClaimOptions(context, sessionId));
       }
     ],
     [
       'heartbeat',
       async () => {
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
+        const sessionId = await resolveSessionId(context);
         return context.service.heartbeat(buildHeartbeatOptions(context, sessionId));
       }
     ],
-    [
-      'release',
-      async () => {
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
-        return context.service.release(buildReleaseOptions(context, sessionId));
-      }
-    ],
+    ['release', async () => releaseResource(context)],
     [
       'delegate',
       async () => {
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
+        const sessionId = await resolveSessionId(context);
         return context.service.delegate(buildDelegateOptions(context, sessionId));
       }
     ],
@@ -2536,7 +3118,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
         return {
           session_id: session.session_id,
           runtime: session.runtime,
-          additionalContext: `Your docko session ID is ${session.session_id}. Claim a slot before writing.`,
+          additionalContext: buildSessionStartContext(session.session_id, context.root),
           env: {
             DOCKO_SESSION_ID: session.session_id,
             DOCKO_RUNTIME: session.runtime
@@ -2564,10 +3146,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
     [
       'session current',
       async () => {
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
+        const sessionId = await resolveSessionId(context);
         const session = await context.service.sessionCurrent(sessionId);
         if (context.options['id-only']) {
           process.stdout.write(session.session_id);
@@ -2577,14 +3156,38 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
         return session;
       }
     ],
-    ['session list', async () => context.service.sessionList()],
+    [
+      'session list',
+      async () => {
+        const limit = parsePositiveInt(option(context.options, 'limit'), 'limit') ?? DEFAULT_SESSION_LIST_LIMIT;
+        const result = await context.service.sessionList();
+        // Newest first, then capped: a long-lived workspace can hold hundreds of sessions and the
+        // caller almost always wants the recent ones.
+        const sessions = [...result.active_sessions].sort(
+          (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)
+        );
+
+        return {
+          active_session_count: result.active_sessions.length,
+          returned_session_count: Math.min(limit, sessions.length),
+          limit,
+          active_sessions: sessions.slice(0, limit)
+        };
+      }
+    ],
     [
       'session prune',
-      async () =>
-        context.service.sessionPrune({
+      async () => {
+        const request: SessionPruneRequest = {
           maxAgeMs: parsePositiveInt(option(context.options, 'max-age-ms'), 'max-age-ms'),
-          dryRun: Boolean(context.options['dry-run'])
-        })
+          dryRun: Boolean(context.options['dry-run']),
+          deleteEndedOlderThanMs:
+            parsePositiveInt(option(context.options, 'delete-ended-older-than-ms'), 'delete-ended-older-than-ms') ??
+            DEFAULT_ENDED_MANIFEST_RETENTION_MS
+        };
+
+        return context.service.sessionPrune(request);
+      }
     ],
     [
       'adapter claude-code install',
@@ -2596,7 +3199,22 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
           writeSettingsLocal: Boolean(context.options['write-settings-local'])
         })
     ],
-    ['adapter claude-code settings', async () => buildClaudeCodeSettingsFragment()],
+    [
+      'adapter claude-code settings',
+      async () =>
+        buildClaudeCodeSettingsFragment({
+          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION
+        })
+    ],
+    [
+      'adapter claude-code doctor',
+      async () =>
+        doctorClaudeCodeAdapter({
+          workspaceRoot: context.root,
+          destination: option(context.options, 'dest') ?? DEFAULT_CLAUDE_PLUGIN_DESTINATION,
+          fix: Boolean(context.options.fix)
+        })
+    ],
     [
       'adapter claude-code session-start',
       async () => {
@@ -2616,7 +3234,7 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
         });
 
         return {
-          additionalContext: `Your docko session ID is ${session.session_id}. Use it for claims and delegated teammates.`,
+          additionalContext: buildSessionStartContext(session.session_id, context.root),
           env: {
             DOCKO_SESSION_ID: session.session_id,
             DOCKO_RUNTIME: 'claude-code'
@@ -2644,17 +3262,14 @@ async function buildHandlers(context: CliContext): Promise<Map<string, Handler>>
       'adapter claude-code pre-tool-use',
       async () => {
         const payload = await readJsonStdin();
-        const sessionId = await context.service.resolveSessionId(
-          option(context.options, 'session'),
-          context.sessionEnv
-        );
+        const sessionId = await resolveSessionId(context);
         const filePath = extractHookFilePath(payload);
         if (!filePath) {
           return { allow: true, reason: 'no-file-path' };
         }
 
         const authorization = await context.service.authorizeFileWrite(sessionId, filePath);
-        return serializeAuthorization(authorization);
+        return serializeAuthorization(authorization, context.root);
       }
     ],
     [
@@ -2710,7 +3325,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
 
     if (context.options.help || context.command[0] === 'help') {
-      printHelp();
+      printCommandHelp(context.command[0] === 'help' ? context.command.slice(1) : context.command);
       return;
     }
 
@@ -2752,7 +3367,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 export const __test__ = {
   main,
   printHelp,
+  printCommandHelp,
+  COMMAND_HELP,
   printText,
+  buildSuggestedCommand,
+  withSessionRecovery,
+  buildSessionStartContext,
+  buildStatusSummary,
+  collectStaleCandidates,
+  isAutoAcquireDisabled,
+  resolvePreferredSlot,
+  compactRelease,
+  withReleaseRecovery,
   option,
   optionList,
   qualifySlotResourceId,

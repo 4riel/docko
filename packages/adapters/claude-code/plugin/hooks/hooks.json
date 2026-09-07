@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" pre-tool-use",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }
@@ -40,7 +40,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/docko-claude-hook.mjs\" subagent-start",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }
