@@ -304,3 +304,38 @@ test('AGENTS.md describes the shipped repository layout', async () => {
   assert.doesNotMatch(agents, /templates\/plugin/);
   assert.match(agents, /marketplace\.json/);
 });
+
+test("this repository's own Claude install matches the bundle it ships", async () => {
+  // The repo dogfoods its own adapter. A stale committed copy here means docko ships a broken
+  // example of its own product, which is exactly what happened before the plugin migration.
+  const pairs = [
+    [
+      path.join(pluginRoot, 'scripts', 'docko-claude-hook.mjs'),
+      path.join(repoRoot, '.claude-plugin', 'docko', 'scripts', 'docko-claude-hook.mjs')
+    ],
+    [
+      path.join(pluginRoot, 'skills', 'workspace-orchestration', 'SKILL.md'),
+      path.join(repoRoot, '.claude', 'skills', 'workspace-orchestration', 'SKILL.md')
+    ]
+  ];
+
+  for (const [shipped, installed] of pairs) {
+    assert.equal(await readFile(installed, 'utf8'), await readFile(shipped, 'utf8'), installed);
+  }
+
+  const bundledCommands = (await readdir(path.join(pluginRoot, 'commands'))).sort();
+  const installedCommands = (await readdir(path.join(repoRoot, '.claude', 'commands'))).sort();
+  assert.deepEqual(installedCommands, bundledCommands);
+  for (const file of bundledCommands) {
+    assert.equal(
+      await readFile(path.join(repoRoot, '.claude', 'commands', file), 'utf8'),
+      await readFile(path.join(pluginRoot, 'commands', file), 'utf8'),
+      file
+    );
+  }
+
+  // Committed hook config must stay machine-independent.
+  const settings = await readFile(path.join(repoRoot, '.claude', 'settings.docko.json'), 'utf8');
+  assert.match(settings, /\$CLAUDE_PROJECT_DIR/);
+  assert.doesNotMatch(settings, /[A-Za-z]:\\\\|\/home\/|\/Users\//);
+});

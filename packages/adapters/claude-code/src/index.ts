@@ -164,6 +164,10 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
   const pluginBundleRoot = path.join(packageRoot, 'plugin');
   const force = Boolean(options.force);
   const version = await readPackageVersion(packageRoot);
+  // Two shapes on purpose. Files that live in the repo stay portable across machines by
+  // anchoring on $CLAUDE_PROJECT_DIR; the machine-local settings.local.json gets the absolute
+  // path, which resolves from any working directory and any shell.
+  const portableFragment = buildClaudeCodeSettingsFragment({ destination: relativeDestination });
   const settingsFragment = buildClaudeCodeSettingsFragment({ destination: relativeDestination, workspaceRoot });
 
   const pluginResult = await copyManagedTree({
@@ -200,7 +204,7 @@ export async function installClaudeCodeAdapter(options: ClaudeCodeInstallOptions
     workspaceRoot,
     pluginRoot,
     force,
-    settingsFragment,
+    settingsFragment: portableFragment,
     version
   });
 
