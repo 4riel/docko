@@ -5,10 +5,15 @@ description: Protocol, schema, and CLI contract guidance for the docko repositor
 
 # docko Protocol
 
+Rules for changing docko's protocol contract. Use it before touching registry or session shapes,
+claim semantics, or the CLI that reflects them.
+
 ## Read first
 
 - `docs/protocol.md`
 - `docs/architecture.md`
+- `docs/state-files.md`
+- `docs/errors.md`
 - `docs/cli-reference.md`
 - `docs/tests.md`
 - `schemas/registry.schema.json`

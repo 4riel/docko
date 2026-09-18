@@ -16,7 +16,7 @@ packages/cli/        JSON CLI over DockoService (single index.ts with all comman
 packages/adapters/claude-code/  Claude Code runtime adapter: plugin bundle, templates, hooks, installer
 schemas/             Canonical JSON Schema for registry.json and session.json
 tests/               Unit, service, e2e, CLI, and adapter tests (Node test runner)
-docs/                Public documentation (21 files, see docs/INDEX.md)
+docs/                Public documentation (20 files, see docs/INDEX.md)
 bin/                 Entry point (docko.js)
 scripts/             Build, test, and publish orchestration
 .agents/skills/      Repo-local skills for Codex and agent runtimes
@@ -101,6 +101,7 @@ Tests run against built `dist/` output, not source. Always build before testing.
 
 - `tests/core.unit.test.mjs` - errors, fs helpers, session resolution, lock ownership, mutation-gate timeout
 - `tests/core.services.test.mjs` - service orchestration, registry validation, stale recovery, resource-catalog defaults
+- `tests/core.persistence.test.mjs` - atomic-write retries, ended-manifest relocation and retention, temp-artifact sweeping, authorization for undiscovered slot directories
 - `tests/docko.e2e.test.mjs` - end-to-end CLI flows: init, claims, release, delegation, stale recovery, authorization
 - `tests/cli.unit.test.mjs` - CLI parser, interactive init, prompt flows, payload fallbacks
 - `tests/claude-code-adapter.test.mjs` - adapter settings, installer, settings merge, hook command execution
@@ -117,7 +118,7 @@ Tests run sequentially to avoid CLI child-process contention. Coverage is gather
 - When registry or session shapes change, update schemas, docs, and tests together.
 - When CLI commands or behavior change, update `docs/cli-reference.md` and affected README/examples/adapter docs.
 - Keep implemented behavior separate from roadmap material in docs and templates.
-- Do not present Codex or non-Claude runtime support as first-class unless matching packages, templates, and tests exist.
+- Do not describe Codex or non-Claude runtime support as an implemented runtime adapter unless matching packages, templates, and tests exist.
 - Keep command examples shell-neutral and copy-pastable.
 - Do not document flags, outputs, or flows that are not implemented.
 
@@ -147,7 +148,7 @@ Read `docs/INDEX.md` for the full map. Key references:
 - `docs/cli-reference.md` - all CLI commands and options
 - `docs/claude-code.md` - Claude Code adapter details
 - `docs/adapter-spec.md` - runtime adapter contract
-- `docs/contributing.md` - setup and change expectations
+- `docs/development.md` - setup and change expectations
 - `docs/tests.md` - test plan and coverage inventory
 
 <!-- docko:begin:claude -->
@@ -167,7 +168,7 @@ Quick path:
 7. Add `--prefer <slot-id>` when one specific slot is the right one. docko takes it when free and rotates normally when it is not.
 8. If every slot is busy and docko asks whether it should create a fresh managed clone, answer explicitly.
 9. Use `/dock-claim <slot> <branch> <task>` or `docko claim --session "$DOCKO_SESSION_ID" --resource slot --id <slot> --branch <branch> --task "<task>"` only when you already know the exact slot.
-10. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko.
+10. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by docko.
 11. Release it with `/dock-release <slot>` or:
     `docko release --session "$DOCKO_SESSION_ID" --resource slot --id <slot>`
 
@@ -177,7 +178,7 @@ Rules:
 - Never invent a session id. The write hook checks the runtime's own session, so a made-up id claims a slot that then blocks your own writes. Use `$DOCKO_SESSION_ID`, or an id from `docko session list --brief`.
 - `branch` is claim metadata. docko records it and never runs `git checkout`.
 - Claims are slot-scoped. They do not reserve a branch, a PR, or individual files.
-- Read the `applications` section from `docko status --brief` when the workspace has multiple app pools.
+- Read the `applications` section from `docko status --brief` when the workspace has more than one application slot pool.
 - If a parent session already owns the slot, reuse that authority. Do not open a second claim for the same slot.
 - Subagents started with the Agent tool share the parent's session id and inherit its claim. A separately launched `claude` process needs `docko delegate`.
 - If docko reports `AMBIGUOUS_SESSION`, run the `suggested_command` from the error payload; do not end existing sessions unless the user asked for cleanup.

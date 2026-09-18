@@ -1,6 +1,6 @@
 # docko
 
-> Workspace-first slot coordination for AI coding agents.
+Local-first slot coordination for AI coding agents.
 
 [![CI](https://github.com/4riel/docko/actions/workflows/ci.yml/badge.svg)](https://github.com/4riel/docko/actions/workflows/ci.yml)
 [![npm alpha](https://img.shields.io/npm/v/docko-workspace/alpha?label=npm%20alpha)](https://www.npmjs.com/package/docko-workspace)
@@ -8,130 +8,102 @@
 [![license MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![source repo](https://img.shields.io/badge/source-4riel%2Fdocko-24292f)](https://github.com/4riel/docko)
 
-## What is docko?
+## What is docko
 
-`docko` is a local-first protocol that coordinates writable "slots" across one persistent workspace. It answers "who owns this folder right now?" for multi-agent work — so two agents never stomp on the same branch, and stale claims clean themselves up.
+`docko` is a local-first workspace and session protocol for AI coding agents. It coordinates
+writable slots, session ownership, delegation, and stale recovery inside one persistent workspace
+root, so two agents never write into the same slot at once.
 
-It ships a protocol core, a CLI, and a first-class **Claude Code adapter**. Once installed, the adapter drives docko for you through hooks — you do not need to run docko commands by hand.
+It ships three pieces: a protocol core, a CLI, and the [Claude Code adapter](docs/claude-code.md).
+The protocol itself is runtime-agnostic; adapters enforce it for one runtime at a time.
 
 ## Install
 
-```sh
+```bash
 npm install --global docko-workspace@alpha
 ```
 
-Prefer zero-install? Replace `docko` with `npx --yes --package docko-workspace@alpha docko` in every example below.
+Prefer zero-install:
 
-## Quickstart (Claude Code plugin)
-
-This repo doubles as a Claude Code plugin marketplace. Inside Claude Code:
-
-```
-/plugin marketplace add 4riel/docko
-/plugin install docko@docko
+```bash
+npx --yes --package docko-workspace@alpha docko status --root ./workspace
 ```
 
-Then bootstrap any workspace root once:
+Requires Node 22 or later.
 
-```sh
-docko init --root .
-```
+## Get started
 
-The plugin ships the hooks, the `/dock-*` commands, and the `workspace-orchestration` skill — nothing is copied into your project. Hooks no-op in projects without a `docko/` workspace, so the plugin can stay enabled globally. If `docko` is not on `PATH`, the hooks fall back to `npx docko-workspace@alpha` automatically. From there:
+Pick the path that matches your runtime. Each one ends with the guide that walks you through it.
 
-- **SessionStart** opens a docko session automatically and exports `DOCKO_SESSION_ID` into the session's shell, so the commands Claude runs address the right session.
-- **PreToolUse** blocks `Edit` / `Write` into slots the session does not own, and the denial names the slot, the reason, and the one command that fixes it.
-- **SubagentStart** hands a delegated teammate inherited access to the parent's slot.
-- **SessionEnd** releases claims for you.
+- **Claude Code plugin.** Add this repo as a marketplace, install the plugin, and let hooks drive
+  docko for you.
 
-Something misbehaving? `/dock-doctor` (or `docko adapter claude-code doctor`) reports launcher drift, duplicate hook registrations, and how `docko` resolves.
+  ```text
+  /plugin marketplace add 4riel/docko
+  /plugin install docko@docko
+  ```
 
-You work in Claude Code normally. Docko commands run in the background.
-
-## Quickstart (repo-local install)
-
-Prefer everything checked into the project instead of a plugin?
-
-```sh
-docko init --root . --claude
-```
-
-The adapter writes the same hooks, commands, and skill into `.claude/` and `.claude-plugin/docko/`, and wires `CLAUDE.md` guidance.
-
-> Want both Claude Code and Codex guidance in one run? Use `docko init --root . --claude --codex`.
-
-## Quickstart (Codex & other `AGENTS.md` runtimes)
-
-```sh
-docko init --root . --codex
-```
-
-This injects `AGENTS.md` guidance that tells the model to run `docko status`, `docko slot acquire`, and release slots when done. Codex support is **guidance-based, not adapter-based** — there are no hooks enforcing writes, so the model has to follow the rules in `AGENTS.md`.
-
-After init, you work in Codex normally. The agent calls docko for you based on the injected instructions.
-
-## Quickstart (manual / scripts)
-
-For scripting, CI, or runtimes without any adapter:
-
-```sh
-docko init --root ./workspace
-docko status --root ./workspace
-docko slot acquire --root ./workspace --session leader --branch feat/task --task "start work"
-```
-
-Run `docko --help` for the full command list, or see [docs/cli-reference.md](docs/cli-reference.md).
+  [Use docko with Claude Code](docs/claude-code.md)
+- **Repo-local install.** Copy the same hooks, commands, and skill into your project instead of
+  using the plugin.
+  [Install into a project instead](docs/claude-code.md#install-into-a-project-instead)
+- **CLI only.** Run docko by hand or from a script with the [Quickstart](docs/quickstart.md), or
+  from Codex through
+  [Codex and other AGENTS.md runtimes](docs/agents-md-runtimes.md).
 
 ## How it works
 
-```
+```text
 workspace/
-|-- CLAUDE.md          <- managed guidance for agents
-|-- AGENTS.md
-|-- slots/             <- writable clones live here
+|-- slots/             <- writable directories agents work in
+|   |-- main/
 |   |-- backend/main_1/
-|   |-- frontend/main_1/
-|   `-- main/
+|   `-- frontend/main_1/
 `-- docko/
-    |-- registry.json  <- canonical state (machine)
-    |-- registry.md    <- mirror (humans)
+    |-- registry.json  <- canonical ownership state
+    |-- registry.md    <- generated mirror
     |-- sessions/
     `-- logs/
 ```
 
-- One workspace root stays open all day.
-- Code work happens inside `slots/*` — persistent, with warm caches and running servers.
-- `docko/registry.json` is the single source of truth for ownership.
-- Runtime adapters enforce it. The protocol itself is runtime-agnostic.
+- One workspace root stays open for the life of the work.
+- Each slot under `slots/` holds a persistent, writable clone.
+- `docko/registry.json` is the canonical source of ownership. `docko/registry.md` is a generated
+  mirror for humans.
+- A session claims a slot. Stale recovery releases claims nobody is heartbeating.
+- Runtime adapters enforce ownership. The protocol itself works with any runtime.
 
-## Why docko?
+## When to use docko
 
-Use it when you want:
+Use it when:
 
-- persistent slots instead of disposable checkouts
-- long-running local servers tied to stable directories
-- warm dependencies and build artifacts kept hot
-- explicit, inspectable ownership for multi-agent work
-- application-specific slot pools (e.g. `backend`, `frontend`) with their own warm clones
+- you want persistent slots instead of disposable checkouts
+- local servers and warm caches stay tied to one directory
+- more than one agent works against the same workspace root
+- you want explicit, inspectable ownership state on disk
 
-Use [git worktrees](docs/why-not-just-worktrees.md) instead when your environment is light, branch-centric, and recreating local state is cheap.
+Use [git worktrees](docs/why-not-just-worktrees.md) instead when your environment is light and
+branch-centric, and recreating local state is cheap.
 
 ## Limits
 
-- Uses more disk than worktrees.
-- The lock protocol is an operational control, not a security boundary.
-- Only Claude Code has a shipped runtime adapter today — Codex support is guidance-based.
-- Alpha: verify the workflow in your own workspace before relying on it for team-critical coordination.
+- Claude Code is the only implemented runtime adapter today. Codex and other `AGENTS.md` runtimes
+  get guidance, not hook enforcement.
+- The registry lock is an operational control, not a security boundary.
+- Slots use more disk than git worktrees.
+- This is an alpha package. Verify the workflow in your own workspace before relying on it for
+  team-critical coordination.
 
-## Docs
+## Documentation
 
 - [Quickstart](docs/quickstart.md)
-- [Claude Code integration](docs/claude-code.md)
+- [Use docko with Claude Code](docs/claude-code.md)
 - [CLI reference](docs/cli-reference.md)
-- [Protocol spec](docs/protocol.md)
-- [FAQ](docs/faq.md)
-- [Why not just worktrees?](docs/why-not-just-worktrees.md)
-- [Full documentation index](docs/INDEX.md)
+- [Protocol](docs/protocol.md)
+- [Concepts](docs/concepts.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
+See the [documentation index](docs/INDEX.md) for everything else.
 
 ## License
 

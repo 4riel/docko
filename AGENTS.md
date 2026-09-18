@@ -12,8 +12,8 @@
 2. Read `docs/INDEX.md` for the documentation map.
 3. Read the task-specific sources before editing:
    - Protocol, schemas, and CLI contract: `docs/protocol.md`, `docs/architecture.md`, `docs/cli-reference.md`, `docs/tests.md`
-   - Runtime adapters: `docs/adapter-spec.md`, `docs/claude-code.md`
-   - Documentation and examples: `docs/docs-sync.md`, `docs/public-copy.md`, `docs/public-positioning.md`
+   - Runtime adapters: `docs/adapter-spec.md`, `docs/claude-code.md`, `docs/agents-md-runtimes.md`
+   - Documentation and examples: `docs/development.md`, `README.md`, `docs/why-not-just-worktrees.md`
 
 ## Repo Map
 
@@ -32,7 +32,7 @@ packages/core/                  Protocol semantics, persistence, claims, delegat
   src/errors.ts                 DockoError class and error codes
   src/types.ts                  All TypeScript interfaces
   src/paths.ts                  Path calculation for registry, sessions, logs, locks
-  src/constants.ts              Schema version constant
+  src/constants.ts              Schema version, directory names, stale windows, janitor caps, retention
 
 packages/cli/                   Thin JSON CLI over DockoService
   src/index.ts                  All commands: init, app ensure, slot acquire/duplicate, status,
@@ -51,7 +51,7 @@ packages/adapters/claude-code/  Claude Code runtime adapter (only implemented ad
 .claude-plugin/marketplace.json  Makes this repo a Claude Code plugin marketplace
 schemas/                        Canonical JSON Schema for registry.json and session.json
 tests/                          Unit, service, e2e, CLI, and adapter tests (Node test runner)
-docs/                           Public documentation (21 files)
+docs/                           Public documentation (20 files, see docs/INDEX.md)
 bin/docko.js                    CLI entry point
 scripts/                        Build, test, and publish orchestration
 .agents/skills/                 Repo-local skills for Codex and agent runtimes
@@ -73,7 +73,7 @@ examples/                       Copy-pastable examples for adopters
 - When registry or session shapes change, update schemas, docs, and tests together.
 - When CLI commands or behavior change, update `docs/cli-reference.md` and any affected README, examples, or adapter docs.
 - When editing docs or templates, keep implemented behavior separate from roadmap material.
-- Do not present Codex or non-Claude runtime support as first-class implementation unless matching packages, templates, and tests exist.
+- Do not describe Codex or non-Claude runtime support as an implemented runtime adapter unless matching packages, templates, and tests exist.
 - Keep command examples shell-neutral and copy-pastable across PowerShell, cmd.exe, and POSIX shells.
 - Do not document flags, outputs, or recovery flows that are not implemented.
 
@@ -128,19 +128,19 @@ Skills live in `.agents/skills/` with `SKILL.md` definitions and optional `agent
 
 ### Operation Flow
 
-Every registry-backed operation (status, claim, release, delegate, heartbeat, render, authorization):
+Every registry-backed operation (status, claim, release, delegate, heartbeat, render, authorization) (a write check for a path outside every managed slot skips the lock and answers from an unlocked registry read):
 1. Acquire filesystem lock (`docko/.registry.lock/`)
 2. Load or initialize registry
 3. Re-discover slot resources from `slots/`
 4. Load session manifests
 5. Run stale cleanup in memory
 6. Execute operation logic
-7. Write updated registry and regenerate `registry.md`
+7. Write the registry and regenerate `registry.md` only when the document changed
 8. Release lock
 
 ### Error Codes
 
-Exit codes: 0 (success), 1 (usage/input), 2 (ownership conflict), 3 (ambiguous session), 4 (missing session), 5 (corrupted registry).
+Exit codes: 0 (success), 1 (usage/input), 2 (ownership conflict or failed registry write), 3 (ambiguous session), 4 (missing session), 5 (corrupted registry).
 
 Key error codes: `USAGE_ERROR`, `INVALID_ID`, `NO_ACTIVE_SESSION`, `AMBIGUOUS_SESSION`, `SESSION_NOT_FOUND`, `SESSION_ID_CONFLICT`, `RESOURCE_NOT_FOUND`, `RESOURCE_NOT_CLAIMED`, `RESOURCE_ALREADY_CLAIMED`, `RESOURCE_OWNED_BY_OTHER_SESSION`, `CORRUPTED_REGISTRY`.
 
@@ -151,7 +151,7 @@ Key error codes: `USAGE_ERROR`, `INVALID_ID`, `NO_ACTIVE_SESSION`, `AMBIGUOUS_SE
 - If browsing is required, restrict sources to `developers.openai.com` or `platform.openai.com`.
 - Codex officially supports `AGENTS.md`, skills, and explicit subagent workflows.
 - Codex hooks are documented by OpenAI, including Windows-specific command and managed-directory fields.
-- This repo does not ship a Docko Codex adapter package, templates, or tests. Treat Codex support here as instruction-driven `docko` CLI usage, not a first-class adapter.
+- This repo does not ship a docko Codex adapter package, templates, or tests. Treat Codex support here as a guidance-based runtime: instruction-driven `docko` CLI usage, not an implemented adapter.
 
 <!-- docko:begin:codex -->
 ## docko Working Default
@@ -168,7 +168,7 @@ Quick path:
    `docko slot acquire --session <session-id> --application backend --branch <branch> --task "update backend auth" --brief`
 6. Add `--prefer <slot-id>` when one specific slot is the right one.
 7. If docko asks whether it should create a fresh managed clone because all slots are busy, answer explicitly.
-8. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by Docko.
+8. Do code work inside that claimed slot. Root-level files outside managed slots are not blocked by docko.
 9. Release it when done:
    `docko release --session <session-id> --resource slot --id <slot>`
 
@@ -178,12 +178,12 @@ Rules:
 - Reuse `DOCKO_SESSION_ID` when a runtime already set it. Otherwise choose a unique session ID for the run and use it consistently.
 - `branch` is claim metadata. docko records it and never runs `git checkout`.
 - Claims are slot-scoped. They do not reserve a branch, a PR, or individual files.
-- Read the `applications` section from `docko status --brief` when the workspace has multiple app pools.
+- Read the `applications` section from `docko status --brief` when the workspace has more than one application slot pool.
 - If docko reports `AMBIGUOUS_SESSION`, run the `suggested_command` from the error payload, or retry with an explicit `--session <id>` from `docko session list --brief`; do not end existing sessions unless the user asked for cleanup.
 - If every slot is busy and the user already approved the fallback, add `--clone-when-busy` to `docko slot acquire`.
 - Releasing a claim owned by another session requires `--force`, and the release is recorded with `forced_by_session_id`.
 - If `docko` is not on PATH, try `DOCKO_BIN`. If it still is not runnable, stop and tell the user.
 - Do not inspect slots one by one or use `docko/registry.json` as a normal fallback. Use `docko status --brief --claimed`.
 - Delegated Claude teammates inherit parent slot authority when the parent already owns the slot.
-- Do not assume Codex subagents inherit Docko session or slot authority automatically. Docko does not ship a Codex adapter yet.
+- Do not assume Codex subagents inherit docko session or slot authority automatically. docko ships no Codex adapter.
 <!-- docko:end:codex -->

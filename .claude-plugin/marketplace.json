@@ -1,7 +1,8 @@
 {
   "name": "docko",
   "owner": {
-    "name": "4riel"
+    "name": "Ariel Marti",
+    "url": "https://github.com/4riel"
   },
   "description": "docko: workspace slot coordination for AI coding agents, driven by Claude Code hooks.",
   "plugins": [

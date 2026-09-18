@@ -1,89 +1,77 @@
-# Repo Structure
+# Repository structure
+
+This page maps the `docko` repository itself. For the directory layout `docko` creates inside a
+managed workspace root, read [State files](state-files.md).
+
+## Repository layout
+
+Everything below the repository root, with the surface each directory owns.
 
 ```text
 docko/
-|-- AGENTS.md
-|-- CLAUDE.md
-|-- .claude-plugin/
-|   `-- marketplace.json
-|-- .github/
-|-- .husky/
 |-- .agents/
-|   `-- skills/
-|-- docs/
+|   `-- skills/                     Repo-local skills for repo navigation, protocol, and adapter work
+|-- .claude-plugin/
+|   `-- marketplace.json            Makes this repo a Claude Code plugin marketplace
+|-- .github/                        CI, security scanning, issue and PR templates, ownership
+|-- .husky/                         Commit and pre-commit hooks
+|-- bin/
+|   `-- docko.js                    Published CLI entry point
+|-- docs/                           Public documentation, see docs/INDEX.md
+|-- examples/                       Copy-pastable examples for adopters
 |-- packages/
-|   |-- core/
-|   |-- cli/
+|   |-- core/                       Protocol semantics, registry and session persistence
+|   |-- cli/                        JSON CLI over DockoService
 |   `-- adapters/
 |       `-- claude-code/
-|           |-- plugin/       (distributable Claude Code plugin bundle)
-|           `-- templates/    (CLAUDE.md and AGENTS.md snippets)
-|-- schemas/
-|-- tests/
-|-- examples/
-|-- bin/
-|-- CHANGELOG.md
-|-- CONTRIBUTING.md
-|-- SECURITY.md
-|-- package.json
-`-- pnpm-workspace.yaml
+|           |-- plugin/             Distributable Claude Code plugin bundle
+|           `-- templates/          CLAUDE.md and AGENTS.md snippets for adopter projects
+|-- schemas/                        Canonical JSON Schema for registry.json and session manifests
+|-- scripts/                        Build, test, and publish orchestration
+|-- tests/                          Unit, service, e2e, CLI, and adapter tests
+|-- AGENTS.md                       Repo operating rules for Codex and other agents
+|-- CLAUDE.md                       Repo operating rules for Claude Code
+|-- CONTRIBUTING.md                 Contribution policy and pull request flow
+|-- SECURITY.md                     Vulnerability reporting and the security-boundary scope note
+`-- CHANGELOG.md                    Published release history
 ```
 
-## Boundary Map
+## What each surface owns
 
-- `AGENTS.md`: repo-root operating rules for Codex and other agents working in this repository
-- `CLAUDE.md`: repo-root operating rules for Claude Code working in this repository
-- `.github/`: CI, security scanning, issue templates, ownership, and pull request defaults
-- `.husky/`: lightweight commit and pre-commit hooks
-- `.claude-plugin/marketplace.json`: makes this repository a Claude Code plugin marketplace
-- `.agents/skills/`: repo-local skills for repo navigation, protocol work, adapters, and docs sync
-- `docs/`: product framing, protocol reference, architecture, CLI reference, adapter docs, and contributor guidance
-- `packages/core/`: runtime-agnostic protocol semantics, registry persistence, session manifests, stale cleanup, delegation, authorization, and mirror/log services
-- `packages/cli/`: thin command-line wrapper over `DockoService`, plus onboarding and installer flows
-- `packages/adapters/claude-code/`: Claude-specific hook/install integration; the reference adapter today
-- `schemas/`: canonical JSON Schemas for `registry.json` and session manifests
-- `tests/`: unit coverage for core modules plus end-to-end CLI and adapter behavior
-- `examples/`: example layouts and integration material
-- `bin/`: published entrypoint wrapper
-- `CHANGELOG.md`, `CONTRIBUTING.md`, and `SECURITY.md`: release history and repository-wide contributor/security policies
-- `eslint.config.js`, `.prettierrc.json`, and `commitlint.config.js`: automated code and commit hygiene
+| Directory | Owns |
+| --- | --- |
+| `packages/core` | Protocol semantics: claims, delegation, stale recovery, session resolution, authorization, and registry persistence. |
+| `packages/cli` | The public command surface: argument parsing, command routing, JSON output, and interactive onboarding. |
+| `packages/adapters/claude-code` | The Claude Code adapter: the plugin bundle, the hook launcher, the installer, and settings generation. |
+| `schemas/` | Canonical JSON Schema for `registry.json` and session manifests. |
+| `docs/` | Product documentation: guides, concepts, and reference pages. |
+| `examples/` | Copy-pastable workspace and settings examples that match shipped behavior. |
+| `tests/` | Unit, service, end-to-end, CLI, and adapter coverage for every surface above. |
+| `scripts/` | Build, test, and publish orchestration used by the `package.json` scripts. |
+| `.agents/skills/` | Repo-local skills for navigating this repository. |
+| `.github/` | CI workflows, security scanning, and issue and pull request templates. |
 
-## Why The Layout Is Split This Way
+Keeping the layout split this way keeps the public contract inspectable: `packages/core` states what
+the protocol means, `schemas/` states what the persisted documents look like, `packages/cli` states
+how a script invokes it, and `packages/adapters/*` state how one runtime participates without owning
+the protocol.
 
-The repository keeps contract, implementation, and integration surfaces separate on purpose:
+Each surface has its own tests: `packages/core`, `packages/cli`, and `packages/adapters/claude-code`
+each ship a `dist/` build, and `tests/` covers all three plus the distributable plugin bundle. Read
+[Tests](tests.md) for the suite-to-surface mapping.
 
-- protocol semantics live in `packages/core`, not in runtime adapters
-- the public CLI stays thin so command behavior mirrors the service layer instead of inventing extra state
-- schemas live outside the implementation packages because they are public contract documents
-- docs live outside source packages so public guidance can be reviewed alongside the protocol contract
+## Repository versus managed workspace
 
-## Managed Workspace Versus Repository
+This repository is the source code for `docko`. A managed workspace root that `docko init` creates
+has a different layout: a `slots/` directory plus a `docko/` directory holding the registry, session
+manifests, and locks. Read [State files](state-files.md) for that tree in full.
 
-This repository is the source code for `docko`.
-A managed `docko` workspace created by the CLI has a different layout:
+Keep the distinction in mind when you read the docs: this page and [Architecture](architecture.md)
+explain how `docko` itself is implemented; the reference pages under `docs/` explain the state a
+managed workspace holds at runtime.
 
-```text
-workspace/
-|-- slots/
-`-- docko/
-    |-- registry.json
-    |-- registry.md
-    |-- .registry.lock/
-    |-- sessions/
-    `-- logs/
-```
+## Related
 
-That distinction matters when reading the docs:
-
-- repo structure explains how `docko` itself is implemented
-- protocol docs explain the state layout inside a managed workspace
-
-## Ownership Expectations By Surface
-
-- edit `packages/core` when claim semantics, stale cleanup, session persistence, or authorization rules change
-- edit `packages/cli` when flags, command dispatch, onboarding, or output shaping change
-- edit `packages/adapters/*` when runtime hook behavior or installed assets change
-- edit `schemas/` and the protocol docs whenever the persisted shapes or documented contract change
-- edit `tests/` alongside the owning surface whenever behavior changes
-
-Keeping those boundaries clean is part of the project's design, not just repo organization.
+- [State files](state-files.md)
+- [Architecture](architecture.md)
+- [Development](development.md)

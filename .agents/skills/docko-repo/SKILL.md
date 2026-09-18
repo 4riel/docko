@@ -5,13 +5,16 @@ description: Repository onboarding and working conventions for the docko monorep
 
 # docko Repo
 
+How this monorepo is laid out and which surface owns which change. Use it when planning work
+anywhere in the repo.
+
 ## Read first
 
 - `AGENTS.md`
 - `README.md`
 - `docs/INDEX.md`
 - `docs/repo-structure.md`
-- `docs/contributing.md`
+- `docs/development.md`
 - For Codex-specific wording, verify against official OpenAI docs before editing repo guidance.
 
 ## Navigate by surface
@@ -30,7 +33,7 @@ description: Repository onboarding and working conventions for the docko monorep
 - Treat `registry.json` as canonical and `registry.md` as generated.
 - If the task becomes protocol-heavy, read `docs/protocol.md`, `docs/architecture.md`, `docs/cli-reference.md`, and use `docko-protocol`.
 - If the task becomes adapter-heavy, read `docs/adapter-spec.md`, `docs/claude-code.md`, and use `docko-adapters`.
-- If the task becomes documentation-heavy, read `docs/docs-sync.md` and use `docko-docs`.
+- If the task becomes documentation-heavy, read `docs/development.md` and use `docko-docs`.
 - Keep Claude adapter docs grounded in `packages/adapters/claude-code/src/index.ts`, `packages/adapters/claude-code/templates/`, and `tests/claude-code-adapter.test.mjs`.
 - Keep Codex guidance grounded in official OpenAI docs and describe it as manual guidance unless this repo gains a real Codex adapter package.
 
