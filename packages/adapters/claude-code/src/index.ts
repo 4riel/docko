@@ -516,7 +516,8 @@ function buildPluginManifest(version: string): Record<string, unknown> {
     version,
     description: 'Repo-local Claude Code integration bundle for docko workspace orchestration',
     author: {
-      name: '4riel'
+      name: 'Ariel Marti',
+      url: 'https://github.com/4riel'
     }
   };
 }

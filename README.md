@@ -36,7 +36,14 @@ Requires Node 22 or later.
 Pick the path that matches your runtime. Each one ends with the guide that walks you through it.
 
 - **Claude Code plugin.** Add this repo as a marketplace, install the plugin, and let hooks drive
-  docko for you. [Use docko with Claude Code](docs/claude-code.md)
+  docko for you.
+
+  ```text
+  /plugin marketplace add 4riel/docko
+  /plugin install docko@docko
+  ```
+
+  [Use docko with Claude Code](docs/claude-code.md)
 - **Repo-local install.** Copy the same hooks, commands, and skill into your project instead of
   using the plugin.
   [Install into a project instead](docs/claude-code.md#install-into-a-project-instead)
