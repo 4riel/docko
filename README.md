@@ -1,55 +1,82 @@
 # docko
 
-Local-first slot coordination for AI coding agents.
+**One workspace. Many agents. Zero write collisions.**
+
+`docko` is a local-first workspace and session protocol for AI coding agents. It gives every
+agent session its own writable slot under one persistent workspace root — and makes ownership
+explicit, inspectable, and self-healing.
 
 [![CI](https://github.com/4riel/docko/actions/workflows/ci.yml/badge.svg)](https://github.com/4riel/docko/actions/workflows/ci.yml)
 [![npm alpha](https://img.shields.io/npm/v/docko-workspace/alpha?label=npm%20alpha)](https://www.npmjs.com/package/docko-workspace)
 [![node >=22](https://img.shields.io/node/v/docko-workspace/alpha)](https://nodejs.org)
 [![license MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![source repo](https://img.shields.io/badge/source-4riel%2Fdocko-24292f)](https://github.com/4riel/docko)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A63D2)](docs/claude-code.md)
 
-## What is docko
+## The problem
 
-`docko` is a local-first workspace and session protocol for AI coding agents. It coordinates
-writable slots, session ownership, delegation, and stale recovery inside one persistent workspace
-root, so two agents never write into the same slot at once.
+Point two agents at the same repository and they will eventually edit the same files, fight
+over the same dev server, and leave you guessing which checkout is safe to touch. Git
+worktrees isolate code, but they don't tell you *who owns what right now* — and they throw
+away the warm state (running servers, caches, build output) you wanted to keep.
 
-It ships three pieces: a protocol core, a CLI, and the [Claude Code adapter](docs/claude-code.md).
-The protocol itself is runtime-agnostic; adapters enforce it for one runtime at a time.
+docko answers the ownership question with state on disk, not hope.
 
-## Install
+## What docko does
+
+- **Persistent slots.** Each slot under `slots/` is a writable clone that keeps dev servers,
+  caches, and build state warm across sessions.
+- **Explicit claims.** A slot has exactly one owner session at a time. Claims record the
+  session, branch, and task — nothing is implicit.
+- **Delegation.** A parent session can hand slot authority to subagents or teammates,
+  explicitly and per-resource.
+- **Stale recovery.** Heartbeats keep claims alive; abandoned ones expire automatically, so a
+  crashed agent can't hold a slot hostage.
+- **Inspectable state.** `docko/registry.json` is canonical. `docko/registry.md` is a generated
+  mirror you can actually read:
+
+  | Application | Slot | Status | Branch | Task | Updated | Owner |
+  |---|---|---|---|---|---|---|
+  | | backend | FREE | | | | |
+  | | main | CLAIMED | feat/demo | demo | 2026-09-21 15:34 | ses_ce01cc6b… |
+
+## What docko does not do
+
+- **No git operations.** `branch` on a claim is recorded metadata. docko never runs
+  `git checkout`, never merges, never touches your history.
+- **No network.** Everything is local JSON on disk. There is no server, no account, no sync.
+- **Not a security boundary.** The filesystem lock coordinates honest agents; it does not
+  sandbox malicious ones.
+- **Not a worktree replacement for light work.** If your environment is branch-centric and
+  recreating local state is cheap, [git worktrees](docs/why-not-just-worktrees.md) are the
+  simpler tool.
+
+## 60 seconds
 
 ```bash
-npm install --global docko-workspace@alpha
+npm install --global docko-workspace@alpha   # Node >= 22
+docko init                                  # creates slots/ and docko/ in your workspace
+docko session start --session my-session
+docko slot acquire --session my-session --branch feat/x --task "describe the work" --brief
+docko status --brief                        # who owns what, right now
 ```
 
-Prefer zero-install:
+Prefer zero-install? `npx --yes --package docko-workspace@alpha docko status --root ./workspace`
 
-```bash
-npx --yes --package docko-workspace@alpha docko status --root ./workspace
+## Claude Code plugin
+
+The shipped runtime adapter. Four hooks (`SessionStart`, `SessionEnd`, `PreToolUse`,
+`SubagentStart`), five `/dock-*` commands, and a `workspace-orchestration` skill. The
+`PreToolUse` hook blocks `Write`/`Edit` inside slots your session doesn't own — and the deny
+message names the exact command that fixes it.
+
+```text
+/plugin marketplace add 4riel/docko
+/plugin install docko@docko
 ```
 
-Requires Node 22 or later.
-
-## Get started
-
-Pick the path that matches your runtime. Each one ends with the guide that walks you through it.
-
-- **Claude Code plugin.** Add this repo as a marketplace, install the plugin, and let hooks drive
-  docko for you.
-
-  ```text
-  /plugin marketplace add 4riel/docko
-  /plugin install docko@docko
-  ```
-
-  [Use docko with Claude Code](docs/claude-code.md)
-- **Repo-local install.** Copy the same hooks, commands, and skill into your project instead of
-  using the plugin.
-  [Install into a project instead](docs/claude-code.md#install-into-a-project-instead)
-- **CLI only.** Run docko by hand or from a script with the [Quickstart](docs/quickstart.md), or
-  from Codex through
-  [Codex and other AGENTS.md runtimes](docs/agents-md-runtimes.md).
+[Use docko with Claude Code](docs/claude-code.md) ·
+[Install into a project instead](docs/claude-code.md#install-into-a-project-instead) ·
+[Codex and other AGENTS.md runtimes](docs/agents-md-runtimes.md)
 
 ## How it works
 
@@ -66,33 +93,23 @@ workspace/
     `-- logs/
 ```
 
-- One workspace root stays open for the life of the work.
-- Each slot under `slots/` holds a persistent, writable clone.
-- `docko/registry.json` is the canonical source of ownership. `docko/registry.md` is a generated
-  mirror for humans.
-- A session claims a slot. Stale recovery releases claims nobody is heartbeating.
-- Runtime adapters enforce ownership. The protocol itself works with any runtime.
+Every registry-backed operation takes a filesystem lock, re-discovers slots, runs stale
+cleanup, executes, and releases — one small, explicit state machine.
 
 ## When to use docko
 
-Use it when:
-
-- you want persistent slots instead of disposable checkouts
-- local servers and warm caches stay tied to one directory
-- more than one agent works against the same workspace root
-- you want explicit, inspectable ownership state on disk
-
-Use [git worktrees](docs/why-not-just-worktrees.md) instead when your environment is light and
-branch-centric, and recreating local state is cheap.
+- You want persistent slots instead of disposable checkouts
+- Local servers and warm caches stay tied to one directory
+- More than one agent works against the same workspace root
+- You want explicit, inspectable ownership state on disk
 
 ## Limits
 
-- Claude Code is the only implemented runtime adapter today. Codex and other `AGENTS.md` runtimes
-  get guidance, not hook enforcement.
-- The registry lock is an operational control, not a security boundary.
+- Claude Code is the only implemented runtime adapter today. Codex and other `AGENTS.md`
+  runtimes get guidance, not hook enforcement.
 - Slots use more disk than git worktrees.
-- This is an alpha package. Verify the workflow in your own workspace before relying on it for
-  team-critical coordination.
+- This is an alpha package. Verify the workflow in your own workspace before relying on it
+  for team-critical coordination.
 
 ## Documentation
 
